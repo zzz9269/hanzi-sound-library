@@ -1,0 +1,30 @@
+# 漢字音庫 (hanzihub) dependencies
+#
+# Dataset build pipeline (hanzihub package) -------------------------------
+pandas>=2.0
+numpy>=1.24
+openpyxl>=3.1          # read the Hakka/Teochew/Baxter-Sagart .xlsx sources
+pyarrow>=12.0          # write the long provenance table as parquet
+scikit-learn>=1.3      # ML imputation (impute.py)
+regex>=2023.0          # Unicode \p{Han} matching (optional; re fallback exists)
+
+# Interactive lookup app (app.py — Streamlit; legacy: 漢字音庫_v9.ipynb) ---
+streamlit>=1.40        # `streamlit run app.py` front-end
+ipywidgets>=8.0        # legacy notebook front-end
+beautifulsoup4>=4.12   # JapanDict / koreanhanja / Nom Foundation scraping
+requests>=2.31
+lxml>=4.9              # pandas.read_html backend for Nom tables
+python-docx>=1.1       # render the Sinitic evolution paper (.docx)
+hanja>=0.13            # Hanzi -> Hangul (local Korean fallback)
+hangul-romanize>=0.1   # Hangul romanization
+pypinyin>=0.50         # local tone-marked pinyin for the Definition block
+romkan>=0.2            # romaji -> kana (kana_romaji_utils.py)
+
+# Optional Japanese reading fallbacks (used only if installed) ------------
+# fugashi[unidic-lite]  # MeCab tagger for kana when JapanDict misses
+# pykakasi              # kana -> romaji fallback
+
+# Google Cloud (TTS + Translation) ---------------------------------------
+# Credentials come from the GOOGLE_APPLICATION_CREDENTIALS env var; see README.
+google-cloud-texttospeech>=2.16
+google-cloud-translate>=3.15

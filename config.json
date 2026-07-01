@@ -1,0 +1,23 @@
+{
+  "preferred_order": [
+    "Definition",
+    "Mandarin",
+    "Old Chinese",
+    "Middle Chinese",
+    "Cantonese",
+    "Hokkien",
+    "Teochew",
+    "Hakka",
+    "Japanese",
+    "Japanese On",
+    "Japanese Kun",
+    "Korean (Hangul)",
+    "Korean (Yale)",
+    "Vietnamese",
+    "Gan",
+    "Wu", 
+    "Xiang",
+    "Jin"
+  ],
+  "ignore_chars": "()[]{}:;,-.'\"/\\|+=…%0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+}

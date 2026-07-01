@@ -1,0 +1,1183 @@
+"""UI-free core for the 漢字音庫 app: data loading, IPA rendering/approximation,
+TTS, Google translation/romanization, and Japanese/Korean helpers.
+
+Ported from the 漢字音庫_v9.ipynb cell so the Streamlit app (``app.py``) and any
+other front-end can share one implementation. Nothing here imports Streamlit or
+ipywidgets — functions return data or HTML strings.
+"""
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import html as _html
+import itertools
+import os
+import re
+import sys
+import unicodedata
+from functools import lru_cache
+from pathlib import Path
+
+import pandas as pd
+
+from . import paths
+
+sys.path.insert(0, str(paths.ROOT))  # for the repo-root kana_romaji_utils module
+
+# --------------------------------------------------------------- voices ----
+VOICE_JA = ("ja-JP", "ja-JP-Wavenet-B")
+VOICE_KO = ("ko-KR", "ko-KR-Wavenet-A")
+VOICE_ZH = ("cmn-CN", "cmn-CN-Wavenet-A")
+VOICE_YUE = ("yue-HK", "yue-HK-Standard-A")
+VOICE_VI = ("vi-VN", "vi-VN-Wavenet-A")
+
+PROJECT_ID = "zach-ipa-tts-2025"
+PARENT = f"projects/{PROJECT_ID}/locations/global"
+
+EXCLUDE_COLS = {"fanqie_upper", "fanqie_lower"}
+COMBINED_CSV = str(paths.COMBINED_CSV if paths.COMBINED_CSV.exists()
+                   else paths.LEGACY_COMBINED_CSV)
+IPA_FILE = str(paths.IPA_LIBRARY_TXT)
+CACHE_DIR = str(paths.ROOT / "cache")
+
+PREFERRED_ORDER = [
+    "Definition", "Mandarin", "Cantonese", "Hokkien", "Teochew",
+    "Eastern Min (Fuzhou)", "Northern Min (Jian'ou)", "Hainanese (Haikou)",
+    "Hakka", "Wu", "Hui (Shexian)", "Gan", "Xiang", "Jin",
+    "Middle Chinese", "Middle Chinese (Baxter)", "Middle Chinese (position)",
+    "Tang", "Fanqie", "fanqie_upper", "fanqie_lower",
+    "Old Chinese", "Old Chinese (Zhengzhang)", "Proto-Min", "Vietnamese", "Zhuang",
+    "Japanese", "Japanese On", "Japanese Kun", "Okinawan",
+    "Korean (Hangul)", "Korean (romanized)", "Korean (Yale)",
+]
+
+_RE_HANGUL = re.compile(r"[ᄀ-ᇿ㄰-㆏가-힯]+")
+_HANZI_RE = re.compile(r"[㐀-鿿\U00020000-\U0002FFFF]")
+
+
+# =====================================================================
+# Google Cloud clients (Application Default Credentials)
+# =====================================================================
+@lru_cache(maxsize=1)
+def translate_client():
+    try:
+        from google.cloud import translate_v3 as translate
+        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            return translate.TranslationServiceClient()
+        legacy = paths.ROOT / "TTS" / "tts-robot-key.json"
+        return (translate.TranslationServiceClient.from_service_account_file(str(legacy))
+                if legacy.exists() else translate.TranslationServiceClient())
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def tts_client():
+    try:
+        from google.cloud import texttospeech as gcp_tts
+        return gcp_tts.TextToSpeechClient()
+    except Exception:
+        return None
+
+
+def gt_ready() -> bool:
+    return translate_client() is not None
+
+
+def gtrans_translate_text(text: str, target: str, source: str | None = None) -> str:
+    cli = translate_client()
+    if not cli or not text:
+        return ""
+    try:
+        req = {"parent": PARENT, "contents": [text], "target_language_code": target}
+        if source:
+            req["source_language_code"] = source
+        resp = cli.translate_text(request=req)
+        return resp.translations[0].translated_text or "" if resp.translations else ""
+    except Exception:
+        return ""
+
+
+def gtrans_romanize(text: str, source_lang: str) -> str:
+    cli = translate_client()
+    if not cli or not text:
+        return ""
+    try:
+        resp = cli.romanize_text(request={
+            "parent": PARENT, "contents": [text], "source_language_code": source_lang})
+        return resp.romanizations[0].romanized_text or "" if resp.romanizations else ""
+    except Exception:
+        return ""
+
+
+def rom_zh(s: str) -> str:
+    return gtrans_romanize(s, "zh") or ""
+
+
+@lru_cache(maxsize=1)
+def char_meta() -> dict:
+    """char → {{'strokes': int, 'radical': int}} from Unihan IRGSources (cache)."""
+    import json
+    p = paths.ROOT / "data" / "raw" / "unihan" / "char_meta.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def kangxi_radical(n: int) -> str:
+    """Kangxi radical glyph for radical number ``n`` (1–214), e.g. 143 → ⾎."""
+    return chr(0x2F00 + n - 1) if isinstance(n, int) and 1 <= n <= 214 else ""
+
+
+def pinyin(text: str) -> str:
+    """Local tone-marked Hanyu Pinyin for a Han string (offline, via pypinyin)."""
+    try:
+        from pypinyin import lazy_pinyin, Style
+        return "".join(lazy_pinyin(text, style=Style.TONE))
+    except Exception:
+        return gtrans_romanize(text, "zh") or ""
+
+
+class TranslationError(RuntimeError):
+    """Raised when the Google Translation API call fails (quota, auth, …)."""
+
+
+def _friendly_translate_error(e: Exception) -> str:
+    s = str(e)
+    if "RESOURCE_EXHAUSTED" in s or "429" in s:
+        return ("Google Translation daily quota exceeded. It resets each day; to "
+                "lift it, raise the quota or confirm billing for project "
+                f"{PROJECT_ID} in the Google Cloud console.")
+    if "PERMISSION_DENIED" in s or "403" in s:
+        return ("Translation API permission denied — enable the Cloud Translation "
+                "API and check the service-account has access.")
+    return f"{type(e).__name__}: {s[:200]}"
+
+
+def translate_text(text: str, target: str, source: str | None = None) -> str:
+    """Translate ``text`` → ``target``. Returns ``''`` only for empty input, but
+    **raises** :class:`TranslationError` on any API failure, so callers surface
+    quota/credential problems instead of silently echoing the input."""
+    if not text:
+        return ""
+    cli = translate_client()
+    if cli is None:
+        raise TranslationError("Translation client not initialized (no credentials).")
+    try:
+        req = {"parent": PARENT, "contents": [text], "target_language_code": target}
+        if source:
+            req["source_language_code"] = source
+        resp = cli.translate_text(request=req)
+        return (resp.translations[0].translated_text or "") if resp.translations else ""
+    except Exception as e:
+        raise TranslationError(_friendly_translate_error(e))
+
+
+# =====================================================================
+# TTS (Google Cloud → mp3 bytes, disk-cached)
+# =====================================================================
+def _tts_cache_path(token, lang, voice) -> Path:
+    key = hashlib.sha1(f"{token}|{lang}|{voice}".encode("utf-8")).hexdigest()
+    p = Path(CACHE_DIR) / "tts_cache" / f"{key}.mp3"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def tts_bytes(text: str, lang: str, voice: str | None) -> bytes:
+    p = _tts_cache_path(text, lang, voice or "")
+    if p.exists():
+        return p.read_bytes()
+    cli = tts_client()
+    if cli is None:
+        raise RuntimeError("Google Cloud TTS not available")
+    from google.cloud import texttospeech as gcp_tts
+    sinput = gcp_tts.SynthesisInput(text=text)
+    aconf = gcp_tts.AudioConfig(audio_encoding=gcp_tts.AudioEncoding.MP3)
+    try:
+        vsel = gcp_tts.VoiceSelectionParams(language_code=lang, name=voice)
+        data = cli.synthesize_speech(input=sinput, voice=vsel, audio_config=aconf).audio_content
+    except Exception:
+        vsel = gcp_tts.VoiceSelectionParams(language_code=lang)
+        data = cli.synthesize_speech(input=sinput, voice=vsel, audio_config=aconf).audio_content
+    p.write_bytes(data)
+    return data
+
+
+def audio_html(text: str, lang: str, voice: str, label: str | None = None) -> str:
+    """Inline autoplay-off <audio> player with a clickable label."""
+    try:
+        mp3 = tts_bytes(text, lang, voice)
+    except Exception:
+        return _html.escape(label or text)
+    b64 = base64.b64encode(mp3).decode("utf-8")
+    return ('<audio controls preload="none" style="height:28px;vertical-align:middle">'
+            f'<source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>')
+
+
+# =====================================================================
+# Japanese / Korean local helpers
+# =====================================================================
+@lru_cache(maxsize=1)
+def jpvariant_map() -> dict:
+    try:
+        import opencc
+        path = os.path.join(os.path.dirname(opencc.__file__), "dictionary", "JPVariants.txt")
+    except Exception:
+        return {}
+    mapping = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2 and len(parts[1]) == 1:
+                    mapping[parts[0]] = parts[1]
+    except Exception:
+        pass
+    return mapping
+
+
+def to_shinjitai_per_char(s: str) -> str:
+    m = jpvariant_map()
+    return "".join(m.get(ch, ch) for ch in (s or ""))
+
+
+def kana_hira_to_kata(s: str) -> str:
+    return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in (s or ""))
+
+
+def prep_ja_tts(kana: str, fallback_kanji: str) -> str:
+    k = re.sub(r"\s+", "", (kana or ""))
+    return kana_hira_to_kata(k) if k else fallback_kanji
+
+
+def romaji_to_hiragana(s: str) -> str:
+    try:
+        from kana_romaji_utils import romaji_to_hiragana as _r
+        return _r(s)
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def _kakasi():
+    import pykakasi
+    return pykakasi.kakasi()
+
+
+def kata_to_romaji(s: str) -> str:
+    """One kana reading → lowercase Hepburn romaji (シン → 'shin'). '' on failure."""
+    try:
+        return "".join(x["hepburn"] for x in _kakasi().convert(s)).lower() if s else ""
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def _ko_transliter():
+    from hangul_romanize import Transliter
+    from hangul_romanize.rule import academic
+    return Transliter(academic)
+
+
+def rom_ko(s: str) -> str:
+    try:
+        return _ko_transliter().translit(s) if s else ""
+    except Exception:
+        return ""
+
+
+def ko_from_hanzi_local(src_hanzi: str):
+    try:
+        from hanja import translate as hanja_to
+        hangul = hanja_to(src_hanzi, "substitution") or ""
+    except Exception:
+        hangul = ""
+    return hangul, (rom_ko(hangul) if hangul else "")
+
+
+def ko_per_char_pairs(text: str) -> str:
+    from hanja import translate as hanja_to
+    pairs = []
+    for ch in text:
+        try:
+            hg = hanja_to(ch, "substitution") or ""
+        except Exception:
+            hg = ""
+        rom = rom_ko(hg) if hg else ""
+        pairs.append(f"{ch}({hg} {rom})" if hg and rom else (f"{ch}({hg})" if hg else ch))
+    return " ".join(pairs)
+
+
+def has_hangul(s: str) -> bool:
+    return bool(_RE_HANGUL.search(s or ""))
+
+
+def looks_like_hanzi(s: str) -> bool:
+    return bool(_HANZI_RE.search(s or ""))
+
+
+# =====================================================================
+# Text helpers
+# =====================================================================
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s or "").strip()).lower()
+
+
+def inline_tokens(val: str) -> str:
+    return " ".join(t for t in re.split(r"[\/\|,;]+\s*|\s+", (val or "").strip()) if t)
+
+
+def split_opts(s: str):
+    return [t for t in re.split(r"[\/\|,;]+\s*|\s+", (s or "").strip()) if t]
+
+
+def sorted_cols(cols):
+    return sorted(cols, key=lambda k: (
+        PREFERRED_ORDER.index(k) if k in PREFERRED_ORDER else 10_000, k.lower()))
+
+
+# =====================================================================
+# Data loading
+# =====================================================================
+def load_combined(csv_path: str = COMBINED_CSV):
+    df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    cols = list(df.columns)
+    ch_col = next((c for c in cols if _norm(c) in {"char", "character", "zi", "漢字", "字"}), cols[0])
+    excl = {re.sub(r"\s+", " ", c.lower()) for c in EXCLUDE_COLS}
+    dialect_cols = [c for c in cols if c != ch_col
+                    and re.sub(r"\s+", " ", c.lower()) not in excl]
+    data = {}
+    for _, row in df.iterrows():
+        ch = str(row[ch_col]).strip()
+        if len(ch) != 1:
+            continue
+        bucket = {}
+        for d in dialect_cols:
+            val = str(row[d]).strip()
+            if val and val.lower() != "nan" and val != "-":
+                bucket[d] = unicodedata.normalize("NFC", val)
+        if bucket:
+            data[ch] = bucket
+    return data, dialect_cols
+
+
+def load_provenance(root=None) -> dict:
+    p = Path(root or paths.ROOT) / "data" / "out" / "readings_long.parquet"
+    if not p.exists():
+        return {}
+    try:
+        ldf = pd.read_parquet(p)
+    except Exception:
+        return {}
+    keep = [c for c in ("char", "column", "reading", "source", "conf") if c in ldf.columns]
+    prov: dict[str, list] = {}
+    for r in ldf[keep].itertuples(index=False):
+        ch = str(getattr(r, "char", "") or "")
+        if len(ch) == 1:
+            prov.setdefault(ch, []).append((
+                getattr(r, "column", ""), getattr(r, "reading", ""),
+                getattr(r, "source", ""), getattr(r, "conf", None)))
+    return prov
+
+
+def concat_per_char(data, dialect, s):
+    out = []
+    for ch in s:
+        tok = split_opts(data.get(ch, {}).get(dialect, ""))
+        out.append(tok[0] if tok else ch)
+    return " ".join(x for x in out if x)
+
+
+def per_char_pairs_from_csv(data, text, dialect):
+    pairs = []
+    for ch in text:
+        tok = split_opts(data.get(ch, {}).get(dialect, ""))
+        pairs.append(f"{ch}({tok[0] if tok else ch})")
+    return " ".join(pairs)
+
+
+# =====================================================================
+# IPA: [ML] styling, English approximation, legend
+# =====================================================================
+_ALT_SEP = " <span style='color:#5a6172'>·</span> "
+
+# Amber "predicted" pill appended to any machine-imputed reading so generated
+# pronunciations stand out at a glance (was a faint grey <sup>ML</sup>).
+ML_TOOLTIP = "Machine-predicted — inferred by model, not attested in any source"
+ML_BADGE = (
+    f'<span title="{ML_TOOLTIP}" style="display:inline-block;margin-left:5px;'
+    "padding:0 5px;border-radius:6px;font-size:.7em;font-weight:700;"
+    "letter-spacing:.4px;vertical-align:middle;background:rgba(225,168,70,.16);"
+    'color:#e0a846;border:1px solid rgba(225,168,70,.45)">🤖 ML</span>'
+)
+
+
+def is_ml_reading(val: str) -> bool:
+    """True if any alternative in the cell is a machine-predicted ([ML]) reading."""
+    return "[ML]" in (val or "")
+
+
+def render_readings_html(val: str, column: str | None = None) -> str:
+    """Render a cell's ``|``-separated alternative readings, each visibly
+    separated, with any ``[ML]``-tagged alternative styled as inferred and
+    tagged with a prominent amber 🤖 ML pill. ``column`` drives the unified
+    Chao tone-letter display (scheme choice + category-column exemptions)."""
+    alts = [t.strip() for t in re.split(r"\s*[|/]\s*", (val or "").strip()) if t.strip()]
+    out = []
+    for t in alts:
+        if t.endswith("[ML]"):
+            out.append(f'<span style="color:#d8c79b;font-style:italic" title="{ML_TOOLTIP}">'
+                       f"{chao_html(tones_to_chao(t[:-4], column))}</span>{ML_BADGE}")
+        else:
+            out.append(chao_html(tones_to_chao(t, column)))
+    return _ALT_SEP.join(out)
+
+
+def approx_text(val: str) -> str:
+    """Plain ``a / b`` English approximation of a cell's alternatives (for tables)."""
+    aps: list[str] = []
+    for a in re.split(r"\s*[|/]\s*", (val or "").strip()):
+        x = ipa_to_english(tones_to_chao(a))
+        if x and x not in aps:
+            aps.append(x)
+    return " / ".join(aps)
+
+
+_IPA_ENG = {
+    "tsʰ": "ts", "tɕʰ": "ch", "tʂʰ": "chr", "tʰ": "t", "pʰ": "p", "kʰ": "k",
+    "cʰ": "ch", "ʈʰ": "tr", "kʷ": "kw", "ɡʷ": "gw",
+    "ts": "dz", "tɕ": "j", "tʂ": "jr", "dʑ": "j", "dz": "dz", "dʐ": "jr",
+    "uai": "wy", "iau": "yow", "uei": "way", "iou": "yoh", "yɛ": "yweh",
+    "ai": "igh", "ɑi": "igh", "ɐi": "igh", "ei": "ay", "au": "ow", "ɑu": "ow",
+    "ɐu": "ow", "ou": "oh", "ɔu": "ow",
+    "ui": "wee", "ua": "wah", "uo": "waw", "uɔ": "waw", "uɛ": "weh",
+    "uᴇ": "weh", "ue": "way", "uə": "wuh",
+    "ia": "yah", "iɛ": "yeh", "iᴇ": "yeh", "ie": "yeh", "io": "yoh",
+    "iu": "yoo", "iə": "yuh", "yn": "ewn", "ym": "ewm",
+    "ɲ": "ny", "ŋ": "ng", "ɳ": "n", "ɱ": "m",
+    "p": "b", "t": "d", "k": "g", "c": "j", "ʈ": "dr", "ɖ": "dr", "b": "b",
+    "d": "d", "ɡ": "g", "g": "g", "q": "g", "ɢ": "g",
+    "ɕ": "sh", "ʂ": "sh", "ʃ": "sh", "ʑ": "zh", "ʐ": "r", "ʒ": "zh", "s": "s",
+    "z": "z", "f": "f", "v": "v", "h": "h", "x": "h", "ɣ": "gh", "ɦ": "h", "χ": "h",
+    "m": "m", "n": "n", "l": "l", "ɬ": "hl", "ɭ": "l", "ɾ": "r", "r": "r",
+    "ɹ": "r", "j": "y", "ɥ": "yu", "w": "w", "ʋ": "v", "ʔ": "'",
+    "i": "ee", "y": "ew", "ɨ": "i", "ʉ": "u", "ɯ": "oo", "u": "oo",
+    "ɪ": "ih", "ʏ": "ew", "ʊ": "uu", "e": "ay", "ᴇ": "eh", "ø": "er", "ɘ": "uh",
+    "ɵ": "er", "ɤ": "uh", "o": "oh", "ə": "uh", "ɛ": "eh", "œ": "er", "ɜ": "er",
+    "ʌ": "uh", "ɔ": "aw", "æ": "a", "ɐ": "uh", "a": "ah", "ɑ": "ah", "ɒ": "aw",
+    "ɿ": "rr", "ʅ": "rr", "ɚ": "er", "ɝ": "er",
+    # affricate ligatures (= ts / dz / tʃ / dʒ / tɕ / dʑ) + retroflex affricates
+    "ʈʂʰ": "chr", "ʈʂ": "jr", "ɖʐ": "jr",
+    "ʦʰ": "ts", "ʧʰ": "ch", "ʨʰ": "ch",
+    "ʦ": "dz", "ʣ": "dz", "ʧ": "ch", "ʤ": "j", "ʨ": "j", "ʥ": "j",
+    # implosives, extra fricatives, alveolo-palatal nasal, retroflex r
+    "ɓ": "b", "ɗ": "d", "ɸ": "f", "β": "v", "θ": "th", "ð": "dh",
+    "ȵ": "ny", "ɻ": "r", "ʁ": "r", "ɭ": "l",
+    # superscript modifiers: pre-nasalisation, secondary articulation, release
+    "ᵐ": "m", "ᵑ": "ng", "ᵐb": "mb", "ⁱ": "y", "ᵘ": "w", "ˡ": "l",
+    "ʳ": "r", "ʸ": "y", "ᵏ": "k", "ᵗ": "t", "ᵖ": "p", "ᵇ": "b", "ᵈ": "d",
+    "ʰ": "h", "ː": "", "ˤ": "", "ʲ": "y", "ʷ": "w", "ⁿ": "n",
+    "̃": "ⁿ", "̩": "",
+    # Chao tone letters pass through unchanged — the unified tone display
+    # keeps the same contour glyphs in the ≈ gloss as in the reading itself
+    "˥": "˥", "˦": "˦", "˧": "˧", "˨": "˨", "˩": "˩",
+    # residual tone digits (category superscripts on exempt columns, or digits
+    # tones_to_chao declined to convert) survive as superscripts in the gloss
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    "⁰": "⁰", "¹": "¹", "²": "²", "³": "³", "⁴": "⁴",
+    "⁵": "⁵", "⁶": "⁶", "⁷": "⁷", "⁸": "⁸", "⁹": "⁹",
+}
+_IPA_KEYS = sorted(_IPA_ENG, key=len, reverse=True)
+
+# --- monosyllabic respelling -------------------------------------------------
+# A Han syllable has exactly one vowel nucleus; everything else in its vowel run
+# is a glide (medial or off-glide), not another syllable. Mapping every vowel
+# symbol to a full English digraph (ɛ→"eh", u→"oo") turns one syllable into two
+# ("ehoo"). So within a vowel run we keep only the most-open vowel as the
+# nucleus and respell the others as y / w / yu glides — except the curated
+# diphthongs in _IPA_ENG (ai→"igh", au→"ow", iɛ→"yeh"…), which already read as a
+# single syllable and have nicer spellings than the generic fold would give.
+_V_BASE = set("aɑɒɐæeɛᴇəɘɤʌɵɜoɔøœiɨʉɯuʊyɪʏ")
+_V_OPEN = {}
+for _grp, _rank in (("aɑɒ", 6), ("ɐæ", 5), ("ɛɔœɜ", 4),
+                    ("eoø", 3), ("əɘɤʌɵ", 2), ("ɪʏʊ", 1)):
+    for _c in _grp:
+        _V_OPEN[_c] = _rank          # unlisted high vowels (i y ɨ ʉ ɯ u) → 0
+_GLIDE_FRONT = set("iɪeɛæ")          # front  → j  (renders "y")
+_GLIDE_ROUND = set("yʏøœ")           # round front → ɥ (renders "yu")
+_DIPH_KEEP = {k for k in _IPA_ENG if len(k) >= 2 and all(c in _V_BASE for c in k)}
+_NONSYL = re.compile("([" + "".join(_V_BASE) + "])̯")
+
+
+def _glide_for(v: str) -> str:
+    if v in _GLIDE_ROUND:
+        return "ɥ"
+    if v in _GLIDE_FRONT:
+        return "j"
+    return "w"                        # back / central → w
+
+
+def _fold_vowel_runs(r: str) -> str:
+    out, i, L = [], 0, len(r)
+    while i < L:
+        if r[i] in _V_BASE:
+            j = i
+            while j < L and r[j] in _V_BASE:
+                j += 1
+            run = r[i:j]
+            if len(run) >= 2 and run not in _DIPH_KEEP:
+                nuc = max(range(len(run)), key=lambda k: _V_OPEN.get(run[k], 0))
+                run = "".join(run[k] if k == nuc else _glide_for(run[k])
+                              for k in range(len(run)))
+            out.append(run); i = j
+        else:
+            out.append(r[i]); i += 1
+    return "".join(out)
+
+
+IPA_APPROX_COLS = {
+    "Hokkien", "Teochew", "Hakka", "Wu", "Gan", "Xiang", "Jin",
+    "Eastern Min (Fuzhou)", "Northern Min (Jian'ou)", "Hainanese (Haikou)",
+    "Hui (Shexian)", "Middle Chinese (Baxter)", "Old Chinese (Zhengzhang)",
+    # IPA-based reconstructions — clean ≈ via ipa_to_english. (The plain
+    # "Middle Chinese" column is Baxter ASCII transcription, not IPA, so it is
+    # deliberately excluded — running the IPA map on it leaks garbage.)
+    "Tang", "Proto-Min",
+}
+
+
+def ipa_to_english(reading: str) -> str:
+    r = unicodedata.normalize("NFD", (reading or "").replace("[ML]", "").strip())
+    # drop affricate tie bars so t͡s / t͡ɕ / ʈ͡ʂ match the ts / tɕ / ʈʂ keys
+    r = r.replace("͡", "").replace("͜", "").replace("͠", "")
+    # any non-syllabic vowel (V + U+032F) is a glide → j / w / ɥ (not just i/y/u)
+    r = _NONSYL.sub(lambda m: _glide_for(m.group(1)), r)
+    # drop the remaining combining marks (tone accents, length, syllabicity…),
+    # keeping only the nasal tilde (mapped to ⁿ below). A tone accent sitting on
+    # the nucleus would otherwise break a diphthong (ɑ̀u → "ah"+"oo" = "ahoo");
+    # removing it keeps the vowel run contiguous so it stays one syllable.
+    r = "".join(c for c in r if c == "̃" or not unicodedata.combining(c))
+    # collapse each vowel run to one nucleus + glides → one English syllable
+    r = _fold_vowel_runs(r)
+    out, i, L = [], 0, len(r)
+    while i < L:
+        if r[i] == " ":
+            out.append(" "); i += 1; continue
+        for k in _IPA_KEYS:
+            if r.startswith(k, i):
+                out.append(_IPA_ENG[k]); i += len(k); break
+        else:
+            # keep only ASCII letters; drop CJK annotations (白/文/去聲…), digits,
+            # combining marks, and any IPA symbol not in the map — never leak raw.
+            if r[i].isascii() and r[i].isalpha():
+                out.append(r[i])
+            i += 1
+    return "".join(out).strip()
+
+
+def ipa_approx_html(val: str) -> str:
+    return approx_html("__ipa__", val)
+
+
+# --- romanisation (POJ / Peng'im / BUC / PFS / Wugniu / Changsha / …) → rough
+# English sounds-like. The live Wiktionary readings are romanisations, not IPA,
+# so the IPA map above does not apply. This is a deliberately rough, scheme-
+# agnostic respelling — enough to give an English reader a "sounds-like", and
+# generated per reading so the ≈ stays 1:1 with what's displayed.
+_ROM_ENG = {
+    # aspirated / digraph initials shared across the southern romanisations
+    "chh": "ch", "tsh": "ts", "kh": "k", "ph": "p", "th": "t",
+    "ch": "ch", "ts": "ts", "ng": "ng", "gn": "ny", "ny": "ny", "nn": "n",
+    # vowel clusters / glides
+    "oa": "wah", "oe": "er", "eo": "er", "eu": "ew", "au": "ow", "ao": "ow",
+    "ai": "igh", "ei": "ay", "ou": "oh", "iu": "yoo", "ui": "wee",
+    "ia": "yah", "ie": "yeh", "io": "yoh", "ua": "wah", "uo": "waw", "ue": "weh",
+    "aa": "ah", "oo": "oo", "ee": "ee",
+    # single letters (c/q/x/z follow the Peng'im / Changsha / Taiyuan values)
+    "c": "ts", "q": "ch", "x": "sh", "z": "ds", "j": "j", "v": "v",
+    "a": "ah", "e": "eh", "i": "ee", "o": "oh", "u": "oo", "y": "ew",
+    "b": "b", "d": "d", "f": "f", "g": "g", "h": "h", "k": "k", "l": "l",
+    "m": "m", "n": "n", "p": "p", "r": "r", "s": "s", "t": "t", "w": "w",
+    "ⁿ": "n", "ŋ": "ng", "ʔ": "", "'": "",
+}
+_ROM_KEYS = sorted(_ROM_ENG, key=len, reverse=True)
+
+# Wugniu (Wu) is identified by a LEADING tone digit and clashes with the
+# scheme-agnostic defaults on a few letters: final ``-q`` is the entering-tone
+# glottal stop (silent here, NOT Peng'im /tsʰ/ → "ch"); ``y-`` is the glide /j/
+# (NOT Taiyuan /y/ → "ew"); ``gh-`` is voiced /ɦ/. These take priority over
+# ``_ROM_ENG`` only when a Wugniu leading tone was found.
+_WUGNIU_ENG = {"gh": "h", "q": "", "y": "y"}
+_WUGNIU_KEYS = sorted(_WUGNIU_ENG, key=len, reverse=True)
+_SUP = {"0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+        "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹"}
+
+# --- tone DIACRITIC → traditional tone number, per romanisation scheme. The
+# southern schemes (POJ/PFS/BUC) write tone as an accent over the vowel rather
+# than a digit, so the ``≈`` approximation lost it. These tables (verified
+# against the Wikipedia POJ / Pha̍k-fa-sṳ / Foochow-Romanized tone charts) let
+# us recover the number. The SAME accent means different tones in different
+# schemes (e.g. macron U+0304 = POJ 7 but BUC 2), so the column's scheme must be
+# passed in. Combining-mark codepoints: U+0300 grave, U+0301 acute, U+0302
+# circumflex, U+0304 macron, U+0306 breve, U+030A ring, U+030D vertical line.
+_TONE_DIACRITIC = {
+    "poj": {"́": "2", "̀": "3", "̂": "5", "̄": "7",
+            "̍": "8"},                       # Hokkien Pe̍h-ōe-jī
+    "pfs": {"̂": "1", "̀": "2", "́": "3", "̊": "5",
+            "̍": "7"},                       # Hakka Pha̍k-fa-sṳ (Sixian)
+    "buc": {"̆": "1", "̄": "2", "́": "3", "̀": "5",
+            "̂": "6"},                       # Eastern Min Bàng-uâ-cê
+}
+# checked-tone (入聲) stop finals per scheme — these split the accents that mark
+# two tones at once: POJ/PFS unmarked = level (1/4) vs checked (4/6); BUC breve
+# = 上平 1 vs 下入 7 and acute = 上去 3 vs 上入 4, told apart by a stop final.
+_CHECKED_FINALS = {"poj": ("p", "t", "k", "h"), "pfs": ("p", "t", "k"),
+                   "buc": ("k", "h")}
+
+# dialect column → its romanisation scheme. The scheme tells the ≈ approximation
+# (a) how to read the tone (accent / trailing digit / leading Wugniu digit) and
+# (b) which class→contour table to use.
+ROM_SCHEME = {
+    "Hokkien": "poj", "Hakka": "pfs", "Eastern Min (Fuzhou)": "buc",
+    "Teochew": "teochew", "Wu": "wugniu", "Gan": "gan",
+    "Xiang": "xiang", "Jin": "jin",
+}
+
+# --- traditional tone CLASS (1–8 by 陰/陽 × 平/上/去/入) → citation Chao pitch
+# CONTOUR, per topolect. The romanisations write only the class (a digit or an
+# accent), which under one green ≈ sat next to the IPA rows' real Chao contours
+# (Shexian ³⁵, Haikou ²¹³) — and a lone class digit misreads as a flat tone. So
+# the ≈ shows the *pitch melody* instead. Values are the standard citation
+# (in-isolation) tones for the reference lect each romanisation encodes; they
+# vary by speaker/source and are sandhi-stripped (see tone_number_guide.md).
+# Checked (入聲) tones are genuinely short, so a single digit there is correct.
+_TONE_CONTOUR = {
+    # Hokkien POJ — Amoy/Taiwanese (Taipei) reference
+    "poj":     {"1": "55", "2": "51", "3": "21", "4": "32",
+                "5": "24", "7": "33", "8": "44"},
+    # Hakka Pha̍k-fa-sṳ — Sixian (Taiwan)
+    "pfs":     {"1": "24", "2": "11", "3": "31", "4": "55",
+                "5": "33", "6": "2", "7": "5"},
+    # Eastern Min Bàng-uâ-cê — Fuzhou
+    "buc":     {"1": "55", "2": "33", "3": "213", "4": "24",
+                "5": "53", "6": "242", "7": "5"},
+    # Teochew Peng'im — Chaozhou
+    "teochew": {"1": "33", "2": "52", "3": "213", "4": "2",
+                "5": "55", "6": "35", "7": "11", "8": "4"},
+    # Wu Wugniu — Shanghai (陰上/陰去 merge → 34; 陽平/陽上/陽去 merge → 23)
+    "wugniu":  {"1": "53", "2": "34", "3": "34", "4": "5",
+                "5": "23", "6": "23", "7": "23", "8": "12"},
+    # Cantonese Jyutping — Guangzhou/Hong Kong citation values. Checked (入聲)
+    # syllables reuse digits 1/3/6, whose level contours are already correct.
+    "jyutping": {"1": "55", "2": "35", "3": "33",
+                 "4": "21", "5": "13", "6": "22"},
+    # Hainanese — Haikou, MCPDict category digits (odd=陰, even=陽; no 4 — the
+    # 陽上 class merged). 9 is MCPDict's 長入 (long entering). Values follow
+    # 梁猷剛《海口方言詞典》/ Wikipedia "Haikou dialect".
+    "haikou":  {"1": "24", "2": "21", "3": "213", "5": "35",
+                "6": "33", "7": "5", "8": "3", "9": "55"},
+    # Gan — Nanchang
+    "gan":     {"1": "42", "2": "24", "3": "213", "5": "45",
+                "6": "21", "7": "5", "8": "21"},
+    # Xiang — Changsha (New Xiang)
+    "xiang":   {"1": "33", "2": "13", "3": "41", "4": "55",
+                "5": "21", "6": "24"},
+    # Jin — Taiyuan
+    "jin":     {"1": "11", "2": "53", "3": "45", "4": "2", "5": "54"},
+}
+
+
+# =====================================================================
+# Unified tone display: Chao tone letters (˥˦˧˨˩)
+# =====================================================================
+# Every displayed tone that denotes a PITCH CONTOUR is rendered as Chao tone
+# letters — a vertical reference staff with the pitch trace attached (˧˥ =
+# starts mid, rises high) — instead of digits. Three digit shapes occur in the
+# data and each is handled differently:
+#   * superscript / ASCII digit runs of 1–5 in IPA readings (kaikki ⁵⁵, Hakka
+#     "(陰平44)") — already Chao NUMERALS → transliterate digit-for-digit;
+#   * tone-CLASS digits in romanisations (Jyutping tin1, Peng'im tiang1,
+#     MCPDict Haikou hi1, Wugniu 8laq) — a category, not a pitch → map class →
+#     citation contour via _TONE_CONTOUR, then render as Chao letters;
+#   * tone-CATEGORY superscripts with *no* defined pitch (Proto-Min *tʰin¹ =
+#     8-way Min category, Baxter MC tʰen¹ = 平上去入) — must NOT be converted
+#     (¹ would misread as low pitch) → exempt columns, left as-is.
+_CHAO_LETTER = {"1": "˩", "2": "˨", "3": "˧", "4": "˦", "5": "˥"}
+_SUP_TO_ASCII = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+_SUP_RUN_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
+# a digit run attached to the end of a letter (syllable), not a bare number
+_TONE_DIGIT_RUN_RE = re.compile(r"(?<=[^\W\d_])[0-9]+")
+_CHAO_RUN_RE = re.compile(r"[˥˦˧˨˩]+")
+
+# In SIL fonts (Charis SIL / Gentium Plus) consecutive tone letters LIGATE into
+# a single staff glyph — one vertical line with the contour drawn onto it, so
+# ˧˥ really is a slanted rise from mid-staff. Elsewhere they degrade gracefully
+# to adjacent bars. app.py @imports these webfonts.
+CHAO_FONT_STACK = "'Charis SIL','Gentium Plus','Doulos SIL',sans-serif"
+
+# wide-CSV columns whose readings carry a tone-CLASS digit (not a contour)
+TONE_CLASS_SCHEME = {
+    "Cantonese": "jyutping", "Teochew": "teochew",
+    "Hainanese (Haikou)": "haikou", "dial:Min-Haikou": "haikou",
+}
+# columns whose superscripts are tone CATEGORIES, not pitch — never convert
+CHAO_EXEMPT_COLS = {"Proto-Min", "Middle Chinese (Baxter)", "Middle Chinese",
+                    "Old Chinese", "Old Chinese (Zhengzhang)", "Tang"}
+
+# IPA-only markers — tone letters, modifier letters, combining diacritics and
+# IPA-exclusive symbols. Distinguishes a true IPA reading (tʰĩ˥) from a plain
+# romanisation (Teochew "tiang1"), gating the ASCII-digit→Chao conversion.
+IPA_MARK_RE = re.compile(
+    r"[˥˦˧˨˩ʰʷʲˡⁿ̯̃̃ʔɛɔəŋɲɕʑʐʂɻɤɯøœɐɑɒʊɪæɓɗʦȵɸβθːˀ]")
+
+
+def has_ipa(val: str) -> bool:
+    return bool(IPA_MARK_RE.search(val or ""))
+
+
+def contour_to_chao(digits: str) -> str:
+    """``"213"`` → ``"˨˩˧"`` if every digit is a pitch level 1–5, else ``""``
+    (a 0/6–9 digit means it was a tone class, not a contour — don't convert)."""
+    if digits and all(d in _CHAO_LETTER for d in digits):
+        return "".join(_CHAO_LETTER[d] for d in digits)
+    return ""
+
+
+def tones_to_chao(val: str, column: str | None = None) -> str:
+    """Unified tone display for one cell/reading: pitch-contour digits become
+    Chao tone letters. ``column`` picks the tone-class scheme (Jyutping /
+    Peng'im / Haikou) and guards the category-superscript columns (Proto-Min,
+    Baxter MC), whose digits are classes, not pitches, and stay untouched."""
+    if not val or column in CHAO_EXEMPT_COLS:
+        return val or ""
+    s = _SUP_RUN_RE.sub(
+        lambda m: contour_to_chao(m.group(0).translate(_SUP_TO_ASCII)) or m.group(0),
+        val)
+    scheme = TONE_CLASS_SCHEME.get(column or "")
+    if scheme:
+        table = _TONE_CONTOUR.get(scheme, {})
+        s = _TONE_DIGIT_RUN_RE.sub(
+            lambda m: contour_to_chao(table.get(m.group(0), "")) or m.group(0), s)
+    elif has_ipa(s):
+        # inside an IPA reading a trailing digit run IS a Chao-numeral contour
+        s = _TONE_DIGIT_RUN_RE.sub(
+            lambda m: contour_to_chao(m.group(0)) or m.group(0), s)
+    return s
+
+
+def wikt_rom_to_chao(rom: str, scheme: str | None) -> str:
+    """Live-Wiktionary romanisation with its tone digit(s) shown as Chao
+    letters: a trailing class digit (Peng'im / Gan / Xiang / Jin) is replaced
+    in place; Wugniu's LEADING digit moves to the end (``8laq`` → ``laq˩˨``).
+    Diacritic schemes (POJ/PFS/BUC) carry no digits and pass through."""
+    if not rom or not scheme or scheme in _TONE_DIACRITIC:
+        return rom or ""
+    table = _TONE_CONTOUR.get(scheme, {})
+
+    def one(syl: str) -> str:
+        m = re.match(r"^(\d+)(.+)$", syl)
+        if m and scheme == "wugniu":
+            chao = contour_to_chao(table.get(m.group(1), ""))
+            return (m.group(2) + chao) if chao else syl
+        m = re.search(r"(\d+)$", syl)
+        if m:
+            chao = contour_to_chao(table.get(m.group(1), ""))
+            if chao:
+                return syl[:m.start()] + chao
+        return syl
+
+    return re.sub(r"[^\s/,]+", lambda m: one(m.group(0)), rom)
+
+
+def chao_html(text: str) -> str:
+    """HTML-escape ``text`` and wrap each Chao tone-letter run in a span whose
+    font ligates the run into a single contour glyph (the slanted-line form)."""
+    esc = _html.escape(text or "")
+    return _CHAO_RUN_RE.sub(
+        lambda m: f'<span style="font-family:{CHAO_FONT_STACK}">{m.group(0)}</span>',
+        esc)
+
+
+def _diacritic_tone(syllable: str, scheme: str) -> str:
+    """Recover the traditional tone number from a diacritic-marked syllable
+    (POJ / PFS / BUC). Returns '' when no tone can be determined."""
+    table = _TONE_DIACRITIC.get(scheme)
+    if not table:
+        return ""
+    nfd = unicodedata.normalize("NFD", syllable)
+    mark = next((c for c in nfd if c in table), "")
+    base = "".join(c for c in nfd if not unicodedata.combining(c)).lower()
+    checked = base.endswith(_CHECKED_FINALS.get(scheme, ()))
+    if mark:
+        t = table[mark]
+        if scheme == "buc" and checked:
+            t = {"3": "4", "1": "7"}.get(t, t)   # acute→上入, breve→下入
+        return t
+    # unmarked: only POJ (1/4) and PFS (4/6) leave the level/checked pair blank
+    if scheme == "poj":
+        return "4" if checked else "1"
+    if scheme == "pfs":
+        return "6" if checked else "4"
+    return ""
+
+
+def romanization_to_english(reading: str, scheme: str | None = None) -> str:
+    """Rough English sounds-like for ONE romanised syllable. The tone is shown
+    as a superscript **Chao pitch contour** (e.g. ``sì`` → ``see²¹``): the tone
+    *class* is read from a leading digit (Wugniu), a trailing digit (Peng'im /
+    Gan / Xiang / Jin) or — for the diacritic systems ``poj``/``pfs``/``buc`` —
+    the accent over the vowel, then mapped to its citation contour via
+    ``_TONE_CONTOUR[scheme]``. Without a known ``scheme`` the raw class digit is
+    kept. A leading tone marks Wugniu, whose ``-q``/``y-``/``gh-`` get Wu
+    values."""
+    s = (reading or "").strip()
+    if not s:
+        return ""
+    tone = ""
+    mlead = re.match(r"^(\d+)(.+)$", s)
+    mtail = re.search(r"(\d+)$", s)
+    wugniu = False
+    if mlead:
+        tone, s = mlead.group(1), mlead.group(2)
+        wugniu = True
+    elif mtail:
+        tone, s = mtail.group(1), s[:mtail.start()]
+    elif scheme in _TONE_DIACRITIC:
+        tone = _diacritic_tone(s, scheme)
+    s = "".join(c for c in unicodedata.normalize("NFD", s)
+                if not unicodedata.combining(c)).lower()
+    out, i, L = [], 0, len(s)
+    while i < L:
+        if wugniu and (k := next((w for w in _WUGNIU_KEYS if s.startswith(w, i)), "")):
+            out.append(_WUGNIU_ENG[k]); i += len(k); continue
+        for k in _ROM_KEYS:
+            if s.startswith(k, i):
+                out.append(_ROM_ENG[k]); i += len(k); break
+        else:
+            if s[i].isascii() and s[i].isalpha():
+                out.append(s[i])
+            i += 1
+    # tone class → citation Chao contour, rendered as Chao tone LETTERS (the
+    # unified tone display); an unknown scheme keeps the raw class digit as a
+    # superscript — a class number must never masquerade as a pitch trace.
+    mapped = _TONE_CONTOUR.get(scheme, {}).get(tone)
+    if mapped is not None:
+        tail = contour_to_chao(mapped) or "".join(_SUP.get(d, "") for d in mapped)
+    else:
+        tail = "".join(_SUP.get(d, "") for d in tone)
+    return "".join(out) + tail
+
+
+def rom_approx_html(rom: str, scheme: str | None = None) -> str:
+    """Green ``≈`` span for a romanised wiki reading — one rough English
+    sounds-like per ``/``-separated reading, kept 1:1 with the display.
+    ``scheme`` (``poj``/``pfs``/``buc``) lets diacritic tones become numbers."""
+    aps = [romanization_to_english(r, scheme)
+           for r in re.split(r"\s*/\s*", (rom or "").strip()) if r]
+    aps = [a for a in aps if a]
+    if not aps:
+        return ""
+    return ("<span style='color:#3a8f3a;font-size:90%' "
+            "title='Rough English approximation - not exact'>"
+            "≈ " + chao_html(" / ".join(aps)) + "</span>")
+
+
+# --- Baxter–Sagart Old Chinese reconstruction → rough readable gloss ---
+# The reconstruction is *not* IPA: it uses cover symbols (* reconstructed,
+# [k] uncertain consonant, ( ) optional, < > infix, . loose preinitial,
+# ˤ pharyngealisation / type-A, -s/-ʔ suffixes). We strip that markup to a
+# readable gloss — e.g. ``*[k]ʷʰˤret-s`` → ``khwret-s`` — not a precise sound.
+_BS_NOTE = re.compile(r"\([^)]*[ >㐀-鿿][^)]*\)")   # parenthetical prose notes
+_BS_STRIP = str.maketrans("", "", "*[]<>.()")
+_BS_CLUSTERS = [
+    ("kʷʰ", "khw"), ("kʰʷ", "khw"), ("gʷʰ", "ghw"), ("qʷʰ", "khw"), ("ɢʷʰ", "ghw"),
+    ("kʰ", "kh"), ("pʰ", "ph"), ("tʰ", "th"), ("tsʰ", "tsh"), ("qʰ", "kh"), ("cʰ", "ch"),
+    ("kʷ", "kw"), ("gʷ", "gw"), ("qʷ", "kw"), ("ɢʷ", "gw"), ("ŋʷ", "ngw"), ("hʷ", "hw"),
+    ("ʔʷ", "'w"),
+]
+_BS_MAP = {"ˤ": "", "ʷ": "w", "ʰ": "h", "ʔ": "'", "ɢ": "g", "q": "k", "ŋ": "ng",
+           "ɲ": "ny", "ɦ": "h", "χ": "kh", "A": "a", "E": "e", "O": "o"}
+_BS_JUNK = set(",:?~!;+&>‘’")
+
+
+def baxter_sagart_approx(form: str) -> str:
+    """One Baxter–Sagart form → rough readable gloss (markup stripped)."""
+    s = _BS_NOTE.sub("", (form or "").strip()).lstrip("*").strip()
+    if not s:
+        return ""
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if not unicodedata.combining(c))
+    s = s.translate(_BS_STRIP)
+    for a, b in _BS_CLUSTERS:
+        s = s.replace(a, b)
+    s = "".join(_BS_MAP.get(c, c) for c in s)
+    s = "".join(c for c in s if c not in _BS_JUNK)
+    return s.strip().strip("-").strip()
+
+
+def approx_html(column: str, val: str) -> str:
+    """Green ``≈`` approximation span suited to the column: a rough reading of
+    the Baxter–Sagart reconstruction for ``Old Chinese``, else an English
+    sounds-like for IPA columns. ``""`` for non-phonetic columns."""
+    # unify contour digits to Chao letters BEFORE glossing (exempt columns —
+    # Proto-Min / Baxter MC category superscripts — pass through untouched)
+    val = tones_to_chao(val, None if column == "__ipa__" else column)
+    variants = [t for t in re.split(r"\s*[|/]\s*", (val or "").strip()) if t]
+    if column == "Old Chinese":
+        label, fn = "Rough reading of the Baxter–Sagart reconstruction", baxter_sagart_approx
+    elif column == "__ipa__" or column in IPA_APPROX_COLS:
+        label, fn = "Rough English approximation of the IPA", ipa_to_english
+    else:
+        return ""
+    aps: list[str] = []
+    for v in variants:
+        a = fn(v)
+        if a and a not in aps:
+            aps.append(a)
+    if not aps:
+        return ""
+    return (f"<span style='color:#3a8f3a;font-size:90%' title='{label} - not exact'>"
+            "≈ " + chao_html(" / ".join(aps)) + "</span>")
+
+
+def remove_cjk_chars(text: str) -> str:
+    return re.sub(r"[㐀-鿿\U00020000-\U0002FFFF]+", "", str(text or ""))
+
+
+# --------------------------------------------------------------------------
+# Middle Chinese 音韻地位 (Qieyun position) — decode the compact codes
+# A code is: 母(initial) + 呼(開/合, opt) + 等(一二三四, opt) + 重紐(A/B, opt)
+#            + 韻(rime) + 聲(平上去入 tone). e.g. 心合一寒平.
+# --------------------------------------------------------------------------
+MC_INITIALS = {
+    "幫": ("p", "p (unaspirated)"), "滂": ("pʰ", "p (aspirated)"), "並": ("b", "b (voiced)"), "明": ("m", "m"),
+    "端": ("t", "t (unaspirated)"), "透": ("tʰ", "t (aspirated)"), "定": ("d", "d (voiced)"), "泥": ("n", "n"), "來": ("l", "l"),
+    "知": ("ʈ", "retroflex t"), "徹": ("ʈʰ", "retroflex t (asp.)"), "澄": ("ɖ", "retroflex d"), "娘": ("ɳ", "retroflex n"), "孃": ("ɳ", "retroflex n"),
+    "精": ("ts", "ts"), "清": ("tsʰ", "ts (aspirated)"), "從": ("dz", "dz (voiced)"), "心": ("s", "s"), "邪": ("z", "z (voiced)"),
+    "莊": ("tʂ", "retroflex ts"), "初": ("tʂʰ", "retroflex ts (asp.)"), "崇": ("dʐ", "retroflex dz"), "生": ("ʂ", "retroflex s"), "俟": ("ʐ", "retroflex z"),
+    "章": ("tɕ", "palatal ts"), "昌": ("tɕʰ", "palatal ts (asp.)"), "常": ("dʑ", "palatal dz"), "禪": ("dʑ", "palatal dz"), "書": ("ɕ", "palatal s"), "船": ("ʑ", "palatal z"), "日": ("ɲ", "palatal n"),
+    "見": ("k", "k"), "溪": ("kʰ", "k (aspirated)"), "羣": ("ɡ", "g (voiced)"), "群": ("ɡ", "g (voiced)"), "疑": ("ŋ", "ng"),
+    "影": ("ʔ", "glottal stop"), "曉": ("x", "h"), "匣": ("ɣ", "h (voiced)"), "云": ("ɦ/j", "glide"), "雲": ("ɦ/j", "glide"), "以": ("j", "y-glide"),
+}
+MC_HU = {"開": "開 open (plain)", "合": "合 rounded (-w-)"}
+MC_DIV = {"一": "I", "二": "II", "三": "III", "四": "IV"}
+MC_TONE = {"平": "平 level", "上": "上 rising", "去": "去 departing", "入": "入 entering (-p/-t/-k)"}
+MC_TONE_PLAIN = {"平": "level (flat)", "上": "rising", "去": "falling (departing)",
+                 "入": "short, checked (ends -p/-t/-k)"}
+
+# Rough reconstructed final for each Guangyun rhyme (by its 平-tone name; the 入
+# tone swaps the nasal coda for a stop). Inherently-rounded rhymes bake in -w-.
+# Approximate (Baxter/Karlgren-ish) — enough to *hear* the syllable, not exact.
+MC_RIMES = {
+    "東": "uŋ", "冬": "oŋ", "鍾": "ɨoŋ", "江": "ɔŋ",
+    "支": "je", "脂": "i", "之": "ɨ", "微": "ɨj",
+    "魚": "ɨə", "虞": "u", "模": "o",
+    "齊": "ej", "佳": "ɛ", "皆": "ɛj", "灰": "woj", "咍": "ʌj", "泰": "aj",
+    "廢": "jɐj", "夬": "waj",
+    "眞": "in", "諄": "win", "臻": "in", "文": "un", "欣": "ɨn", "殷": "ɨn",
+    "元": "jɐn", "魂": "won", "痕": "ʌn",
+    "寒": "an", "桓": "wan", "刪": "an", "山": "ɛn", "先": "en", "仙": "jen",
+    "蕭": "ew", "宵": "jew", "肴": "aw", "豪": "ɑw",
+    "歌": "a", "戈": "wa", "麻": "a",
+    "陽": "jaŋ", "唐": "aŋ",
+    "庚": "aŋ", "耕": "ɛŋ", "清": "jeŋ", "青": "eŋ",
+    "蒸": "iŋ", "登": "əŋ",
+    "尤": "uw", "侯": "ow", "幽": "iw",
+    "侵": "im", "覃": "om", "談": "am", "鹽": "jem", "添": "em", "咸": "ɛm",
+    "銜": "am", "嚴": "jɐm", "凡": "jɐm",
+}
+
+
+# IPA → readable spelling for the MC reconstruction (no b/d/g remapping — keep
+# the actual stops; just spell out symbols a newbie can't read). Longest-match,
+# single pass, so a generated letter (e.g. tɕ→"j") is not re-scanned (j→"y").
+_MC_READ = {"tɕʰ": "ch", "tʂʰ": "chr", "ʈʰ": "tr", "tɕ": "j", "tʂ": "jr",
+            "dʑ": "j", "dʐ": "jr", "ʈ": "tr", "ɖ": "dr", "ɕ": "sh", "ʑ": "zh",
+            "ʂ": "sh", "ʐ": "r", "ɣ": "gh", "ɦ": "h", "ŋ": "ng", "ɲ": "ny",
+            "ʔ": "'", "ɐ": "a", "ʌ": "u", "ɨ": "i", "ə": "uh", "j": "y"}
+_MC_READ_KEYS = sorted(_MC_READ, key=len, reverse=True)
+
+
+def _mc_readable(syl: str) -> str:
+    out, i, L = [], 0, len(syl)
+    while i < L:
+        for k in _MC_READ_KEYS:
+            if syl.startswith(k, i):
+                out.append(_MC_READ[k]); i += len(k); break
+        else:
+            out.append(syl[i]); i += 1
+    return "".join(out)
+
+
+def _mc_syllable_ipa(p: dict) -> str:
+    """Rough reconstructed Middle Chinese IPA for a parsed position."""
+    fin = MC_RIMES.get(p["rime"])
+    if not fin:
+        return ""
+    ini = MC_INITIALS.get(p["initial"])
+    ini_ipa = ini[0].split("/")[0] if ini else ""
+    medial = "w" if (p["hu"] == "合" and fin[:1] not in "wuo") else ""
+    syl = ini_ipa + medial + fin
+    if p["tone"] == "入":  # entering tone: nasal coda → matching stop
+        for n, s in (("ŋ", "k"), ("n", "t"), ("m", "p")):
+            if syl.endswith(n):
+                syl = syl[:-1] + s
+                break
+    return syl
+
+
+def parse_mc_position(code: str) -> dict | None:
+    chars = list((code or "").strip())
+    if not chars:
+        return None
+    tone = chars.pop() if chars and chars[-1] in MC_TONE else ""
+    initial = chars.pop(0) if chars else ""
+    hu = div = chongniu = ""
+    rime = []
+    for c in chars:
+        if c in MC_HU:
+            hu = c
+        elif c in MC_DIV:
+            div = c
+        elif c in "AB":
+            chongniu = c
+        else:
+            rime.append(c)
+    return {"initial": initial, "hu": hu, "div": div, "chongniu": chongniu,
+            "rime": "".join(rime), "tone": tone}
+
+
+MC_DIV_HINT = {
+    "一": "a plain, back-ish vowel; no -y- glide",
+    "二": "a more open vowel (often with retroflex initials)",
+    "三": "has a -y-/-i- like medial (palatal)",
+    "四": "a front vowel with an -i- like quality",
+}
+
+
+def mc_readable_syllable(code: str) -> str:
+    """Rough readable reconstruction of a whole position, e.g. 心合一寒平 → 'swan'."""
+    p = parse_mc_position(code)
+    if not p:
+        return ""
+    syl = _mc_syllable_ipa(p)
+    return _mc_readable(syl) if syl else ""
+
+
+def mc_position_breakdown(code: str):
+    """Per-character elucidation: list of (glyph, role-explanation) for a code,
+    in reading order, so a beginner sees what each character contributes."""
+    p = parse_mc_position(code)
+    if not p:
+        return []
+    rows = []
+    if p["initial"]:
+        ini = MC_INITIALS.get(p["initial"])
+        rows.append((p["initial"],
+                     f"the initial consonant — {ini[1]}" if ini else "the initial consonant"))
+    if p["hu"]:
+        rows.append((p["hu"], "rounding — rounded, adds a -w- glide"
+                     if p["hu"] == "合" else "rounding — open, no -w-"))
+    if p["div"]:
+        rows.append((p["div"], f"division (grade) {MC_DIV[p['div']]} — {MC_DIV_HINT.get(p['div'], '')}"))
+    if p["chongniu"]:
+        rows.append((p["chongniu"], f"chóngniǔ sub-type {p['chongniu']}"))
+    if p["rime"]:
+        fin = MC_RIMES.get(p["rime"])
+        rows.append((p["rime"], f"the rhyme — its vowel + ending, roughly “-{_mc_readable(fin)}”"
+                     if fin else "the rhyme — its vowel + ending"))
+    if p["tone"]:
+        rows.append((p["tone"], f"the tone — {MC_TONE_PLAIN.get(p['tone'], p['tone'])}"))
+    return rows
+
+
+def explain_mc_position(code: str) -> str:
+    """Newbie-friendly decode of one 音韻地位 code: lead with a rough reconstructed
+    sound + plain-English tone, then a muted structural breakdown. e.g.
+    ``心合一寒平`` → ``sounded ~ "swan", level (flat) tone — s‑ · Div. I · 寒 rhyme``."""
+    p = parse_mc_position(code)
+    if not p:
+        return ""
+    syl = _mc_syllable_ipa(p)
+    tone = MC_TONE_PLAIN.get(p["tone"], p["tone"])
+
+    bits = []
+    ini = MC_INITIALS.get(p["initial"])
+    bits.append(f"{p['initial']}‑ ({ini[1]})" if ini else f"{p['initial']}‑")
+    if p["div"]:
+        bits.append(f"Division {MC_DIV[p['div']]}")
+    if p["rime"]:
+        bits.append(f"{p['rime']} rhyme")
+    breakdown = " · ".join(bits)
+
+    if syl:
+        return f'sounded roughly like “{_mc_readable(syl)}”, {tone} tone   —   {breakdown}'
+    return f"{tone} tone   —   {breakdown}"
+
+
+@lru_cache(maxsize=1)
+def load_phonetic_symbols(csv_path: str = IPA_FILE):
+    out = {}
+    if not csv_path or not Path(csv_path).exists():
+        return out
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(8192); f.seek(0)
+        try:
+            delim = csv.Sniffer().sniff(sample).delimiter
+        except Exception:
+            delim = "\t" if "\t" in sample else ","
+        reader = csv.reader(f, delimiter=delim)
+        first = next(reader, None)
+        if first is None:
+            return out
+        header = [c.strip().lower() for c in first]
+        keys = ("ipa_symbol", "ipa", "symbol", "phonetic", "phoneme")
+        if any(any(k in c for k in keys) for c in header):
+            sym_idx = next((i for i, c in enumerate(header)
+                            if any(k in c for k in keys)), 0)
+            desc_idx = next((i for i, c in enumerate(header)
+                             if any(k in c for k in ("description", "desc", "meaning", "example"))), None)
+            rows_iter = reader
+        else:
+            sym_idx, desc_idx = 0, (1 if len(first) > 1 else None)
+            rows_iter = itertools.chain([first], reader)
+        for row in rows_iter:
+            if not row or len(row) <= sym_idx:
+                continue
+            sym = (row[sym_idx] or "").strip()
+            if not sym:
+                continue
+            if desc_idx is not None and len(row) > desc_idx:
+                desc = " ".join((row[i] or "").strip() for i in range(desc_idx, len(row)) if (row[i] or "").strip())
+            else:
+                desc = " ".join((x or "").strip() for x in row[1:] if (x or "").strip()) if len(row) > 1 else ""
+            out[unicodedata.normalize("NFC", sym)] = (unicodedata.normalize("NFC", desc), "")
+    return out
+
+
+def ipa_legend_lines(pron_strs, symbols):
+    if not symbols:
+        return []
+    combined = " ".join(remove_cjk_chars(unicodedata.normalize("NFC", s))
+                        for s in (pron_strs or []) if s)
+    combined = unicodedata.normalize("NFC", combined)
+    TIE = "͡"
+    for v in {"͡", "‿", "͜", "͝", "˕", "͡"}:
+        combined = combined.replace(v, TIE)
+    if not combined.strip():
+        return []
+    keys = sorted([unicodedata.normalize("NFC", k).replace("͡", TIE)
+                   for k in symbols if k], key=len, reverse=True)
+    if not keys:
+        return []
+    pattern = "|".join(re.escape(k) for k in keys)
+    seen, seen_set = [], set()
+    for m in re.finditer(pattern, combined):
+        sym = m.group(0)
+        if sym not in seen_set and sym in symbols:
+            seen.append(sym); seen_set.add(sym)
+    return [f"{sym}: {symbols[sym][0]}" for sym in seen]

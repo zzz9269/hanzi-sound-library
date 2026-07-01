@@ -1,0 +1,17 @@
+# --- Secrets: never commit credentials ---
+TTS/tts-robot-key.json
+*-key.json
+*.credentials.json
+
+# --- Generated / cached data ---
+data/raw/
+data/out/
+cache/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# --- Large intermediate artifacts (regenerable from sources) ---
+combined_dialects.csv
+_v9_dump.txt
+baseline_ml_eval.txt

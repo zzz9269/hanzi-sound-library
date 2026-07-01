@@ -1,0 +1,47 @@
+# Proto-Min GOLD set — reconstructions transcribed from a published authority
+# (Jerry Norman's Proto-Min reconstruction: Norman 1973 "Tonal development in
+# Min", 1974 "The initials of Proto-Min", and his later finals / strata work,
+# refined w/ W. South Coblin). Consumed by `python -m hanzihub.eval_protomin`
+# to measure the rule-based reconstructor (reconstruct.py) against this gold.
+#
+# RULES — read before adding rows:
+#   1. Every `proto_min` value MUST come from a real published source. NEVER
+#      invent or guess a form: a fabricated gold form yields a confident, FALSE
+#      accuracy number and is strictly worse than an empty file.
+#   2. Put a traceable reference in `citation` (e.g. "Norman 1974:34, #112").
+#   3. Notation: IPA segments; a leading reconstruction `*` is optional (the
+#      scorer strips it); tone as a trailing digit (1-8) or superscript. The
+#      scorer segments each form into (onset, rhyme, tone) for per-slot scoring,
+#      so keep the segmental order onset+rhyme+tone.
+#   4. One Han character per row. Columns are TAB-separated.
+#
+# The first non-comment line below is the header. Add gold rows beneath it.
+#
+# Forms below are Norman's full reconstructions (onset + rhyme + tone-category
+# A/B/C/D = 平/上/去/入) as recorded in the English Wiktionary/Wikipedia "Proto-Min"
+# article, which cites Norman with page numbers. Stored VERBATIM in Norman's
+# notation (tš/dž/š, tone letters, ɑ, softened *-/*h series); the scorer bridges
+# that notation to the reconstructor's IPA before comparing. The `citation` keeps
+# Norman's ref AND flags the immediate source (Wikipedia) for later verification
+# against the original print pages.
+char	proto_min	citation	notes
+鼎	*tiaŋB	Norman 1981:35 (via en.wikipedia Proto-Min)	wok
+厝	*tšhioC	Norman 1981:47 (via en.wikipedia Proto-Min)	house
+喙	*tshyiC	Norman 1981:41 (via en.wikipedia Proto-Min)	mouth
+囝	*kiɑnB	Norman 1981:63 (via en.wikipedia Proto-Min)	son
+骹	*khauA	Norman 1981:44 (via en.wikipedia Proto-Min)	foot
+䭕	*-tsiɑmB	Norman 1981:56 (via en.wikipedia Proto-Min)	insipid; softened series
+𧚔	*dzyŋC	Norman 1988:232 (via en.wikipedia Proto-Min)	to wear
+南	*nəmA	Norman 1973:235 (via en.wikipedia Proto-Min)	south
+慢	*mənC	Norman 1973:234 (via en.wikipedia Proto-Min)	slow
+崩	*-peŋA	Norman 1981:66 (via en.wikipedia Proto-Min)	collapse; softened series
+三	*sɑmA	Norman 1974:32 (via en.wikipedia Proto-Min)	three
+山	*sɑnA	Norman 1981:60 (via en.wikipedia Proto-Min)	mountain
+生	*saŋA	Norman 1981:69 (via en.wikipedia Proto-Min)	give birth
+鴿	*kəpD	Norman 1981:53 (via en.wikipedia Proto-Min)	dove
+賊	*dzhətD	Norman 1981:58 (via en.wikipedia Proto-Min)	thief; softened series
+北	*pekD	Norman 1981:66 (via en.wikipedia Proto-Min)	north
+劦	*ɣɑpD	Norman 1981:54 (via en.wikipedia Proto-Min)	fit, agree
+葛	*kɑtD	Norman 1981:60 (via en.wikipedia Proto-Min)	dolichos
+客	*khakD	Norman 1981:69 (via en.wikipedia Proto-Min)	guest
+茄	*kiɑA	Norman 1981:48 (via en.wikipedia Proto-Min)	eggplant
