@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections import defaultdict
 
 import pandas as pd
@@ -56,10 +58,41 @@ def collect_records(*, use_wiktionary: bool = True,
     return recs
 
 
+# --- ingest normalisation -------------------------------------------------
+# Sources write the same reading in different Unicode shapes: NFC vs NFD,
+# tie bar above (t͡s) vs below (t͜s), and pitch contours as superscript
+# digits (kaikki tʰi⁵³) vs Chao letters (wikihan tʰi˥˧). Normalising at ingest
+# makes readings comparable, so the wide-cell dedupe actually deduplicates.
+# Superscripts on the tone-CATEGORY columns are classes, not pitches — exempt.
+_SUP_TO_CHAO = {"¹": "˩", "²": "˨", "³": "˧", "⁴": "˦", "⁵": "˥"}
+_SUP_RUN = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
+# (Definition superscripts are footnote markers, not tones — also exempt.)
+_TONE_CATEGORY_COLS = {"Middle Chinese (Baxter)", "Proto-Min", "Definition"}
+
+
+def _sup_run_to_chao(m: re.Match) -> str:
+    run = m.group(0)
+    if all(c in _SUP_TO_CHAO for c in run):
+        return "".join(_SUP_TO_CHAO[c] for c in run)
+    return run  # 0/6–9 present → a tone class, leave alone
+
+
+def normalize_reading(reading: str, column: str) -> str:
+    """Canonical Unicode + tone shape for one source reading."""
+    s = unicodedata.normalize("NFC", str(reading)).strip()
+    s = s.replace("͜", "͡")        # tie bar below → above
+    s = re.sub(r"[ \t]+", " ", s)
+    if column not in _TONE_CATEGORY_COLS:
+        s = _SUP_RUN.sub(_sup_run_to_chao, s)
+    return s
+
+
 def long_table(records: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame.from_records(
         records, columns=["char", "column", "reading", "source", "locality", "conf"])
-    df = df[df["reading"].astype(str).str.strip().ne("")]
+    df["reading"] = [normalize_reading(r, c)
+                     for r, c in zip(df["reading"].astype(str), df["column"])]
+    df = df[df["reading"].str.strip().ne("")]
     df = df.drop_duplicates(subset=["char", "column", "reading", "source"])
     return df.reset_index(drop=True)
 

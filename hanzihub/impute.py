@@ -20,9 +20,13 @@ correspondences and recompose*:
 1. Each target reading is segmented into ``(onset, rhyme, tone)`` slots
    (:mod:`hanzihub.segment`).
 2. Features per character: the parsed MC category as one-hot **categoricals**
-   (up-weighted — the historical source is the correct predictor), plus
-   char-n-gram TF-IDF of the historical transcriptions (Baxter MC, OC, 反切, Tang)
-   and of the *sibling* dialect readings (direct phonetic similarity).
+   (up-weighted — the historical source is the correct predictor), the sibling
+   dialects' readings segmented into **aligned (onset, rhyme, tone) slot
+   categoricals** (sound correspondences hold slot-by-slot), the character's
+   Unihan **kPhonetic phonetic-series** class (諧聲 series-mates share a rhyme
+   lineage — also the eligibility fallback for chars with no MC position), plus
+   char-n-gram TF-IDF of the historical transcriptions (Baxter MC, OC, 反切,
+   Tang) and of the raw sibling reading strings.
 3. One small multinomial ``LogisticRegression`` per slot maps features → slot
    value. Crucially the per-slot class counts are tiny (onsets ~25, rhymes ~90,
    tones ~8), so — unlike the original whole-syllable LogReg with ~7.6k Cantonese
@@ -44,12 +48,13 @@ from __future__ import annotations
 
 import re
 import warnings
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 
 from .schema import SRC_ML
-from . import merge, segment
+from . import merge, paths, segment
 
 warnings.filterwarnings("ignore")
 
@@ -73,6 +78,14 @@ HIST_COLS = [
 W_MC = 3.0
 W_HIST = 1.5
 W_DIA = 1.0
+W_SIB = 2.0    # aligned sibling (onset,rhyme,tone) slots — correspondences
+W_PHON = 2.0   # Unihan kPhonetic series — chars sharing a phonetic rhyme
+
+# Sibling columns whose primary reading is segmented into aligned
+# (onset, rhyme, tone) categoricals. Sound correspondences hold slot-by-slot,
+# so these beat raw char-n-grams of the same strings; the target column itself
+# is excluded per-featurizer.
+SIB_SLOT_SOURCES = IMPUTE_TARGETS + ["Mandarin"]
 
 # Acceptance gate + training knobs.
 TARGET_PRECISION = 0.88  # each target self-calibrates its gate to ≥ this (held-out)
@@ -118,19 +131,72 @@ def _joined_text(wide_df: pd.DataFrame, cols: list[str]) -> pd.Series:
     return wide_df[cols].apply(_clean).agg(" ".join, axis=1).str.strip()
 
 
+# --- aligned sibling slots + phonetic series (computed once per wide_df) ---
+_SLOT_FRAME_MEMO: dict[int, pd.DataFrame] = {}
+
+
+def _slot_frame(wide_df: pd.DataFrame) -> pd.DataFrame:
+    """(onset, rhyme, tone) of each SIB_SLOT_SOURCES column's primary reading,
+    as categorical string columns named ``<col>\\x00<slot>``. Memoised on the
+    wide_df object — it is segmented once, not once per target/fold."""
+    key = id(wide_df)
+    df = _SLOT_FRAME_MEMO.get(key)
+    if df is None:
+        out = {}
+        for c in (c for c in SIB_SLOT_SOURCES if c in wide_df.columns):
+            slots = _clean(wide_df[c]).map(_primary_slots)
+            for j, part in enumerate(("ons", "rhy", "ton")):
+                out[f"{c}\x00{part}"] = slots.map(
+                    lambda s, j=j: s[j] if s else "")
+        df = pd.DataFrame(out, index=wide_df.index)
+        _SLOT_FRAME_MEMO.clear()          # keep exactly one wide_df cached
+        _SLOT_FRAME_MEMO[key] = df
+    return df
+
+
+@lru_cache(maxsize=1)
+def _phonetic_series() -> dict:
+    """char → primary Unihan kPhonetic class ('中' → '322'). Characters in the
+    same class share a phonetic component, hence (usually) a rhyme lineage —
+    the single strongest reading predictor for chars lacking an MC position."""
+    import json
+    p = paths.RAW_DIR / "unihan" / "kphonetic.json"
+    if not p.exists():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return {ch: v.split()[0] for ch, v in raw.items() if v}
+
+
 class _Featurizer:
-    """Fit MC one-hot + historical/dialect TF-IDF on a train mask; transform any."""
+    """Fit MC one-hot + sibling-slot one-hot + phonetic-series one-hot +
+    historical/dialect TF-IDF on a train mask; transform any."""
 
     def __init__(self, wide_df: pd.DataFrame, target: str):
         self.mc = _mc_frame(wide_df)
+        # aligned sibling slots — every source column EXCEPT the target
+        sib_all = _slot_frame(wide_df)
+        self.sib = sib_all[[c for c in sib_all.columns
+                            if not c.startswith(target + "\x00")]]
+        # phonetic series (kPhonetic) — one categorical column
+        phon_map = _phonetic_series()
+        self.phon = wide_df["char"].map(
+            lambda ch: phon_map.get(ch, "")).to_frame("phon") \
+            if "char" in wide_df.columns and phon_map else None
         self.hist = _joined_text(wide_df, [c for c in HIST_COLS
                                            if c in wide_df.columns])
         self.dia = _joined_text(wide_df, _dialect_cols(wide_df, target))
         self.has_mc = self.mc.ne("").any(axis=1)
+        self.has_phon = (self.phon["phon"].ne("") if self.phon is not None
+                         else pd.Series(False, index=wide_df.index))
         self.n_dia = (wide_df[_dialect_cols(wide_df, target)].apply(_clean)
                       .ne("").sum(axis=1)) if _dialect_cols(wide_df, target) \
             else pd.Series(0, index=wide_df.index)
         self._enc = None
+        self._enc_sib = None
+        self._enc_phon = None
         self._vec_hist = None
         self._vec_dia = None
 
@@ -140,6 +206,11 @@ class _Featurizer:
 
         self._enc = OneHotEncoder(handle_unknown="ignore")
         self._enc.fit(self.mc[mask])
+        self._enc_sib = OneHotEncoder(handle_unknown="ignore")
+        self._enc_sib.fit(self.sib[mask])
+        if self.phon is not None:
+            self._enc_phon = OneHotEncoder(handle_unknown="ignore")
+            self._enc_phon.fit(self.phon[mask])
         for attr, text, ng in (("_vec_hist", self.hist, (1, 3)),
                                ("_vec_dia", self.dia, (1, 2))):
             vec = TfidfVectorizer(analyzer="char_wb", ngram_range=ng, min_df=2)
@@ -151,7 +222,11 @@ class _Featurizer:
 
     def transform(self, mask: pd.Series):
         from scipy.sparse import hstack, csr_matrix
-        parts = [self._enc.transform(self.mc[mask]) * np.sqrt(W_MC)]
+        parts = [self._enc.transform(self.mc[mask]) * np.sqrt(W_MC),
+                 self._enc_sib.transform(self.sib[mask]) * np.sqrt(W_SIB)]
+        if self._enc_phon is not None:
+            parts.append(self._enc_phon.transform(self.phon[mask])
+                         * np.sqrt(W_PHON))
         for vec, text, w in ((self._vec_hist, self.hist, W_HIST),
                              (self._vec_dia, self.dia, W_DIA)):
             if vec is not None:
@@ -235,8 +310,10 @@ def _predict(feat: _Featurizer, models, mask: pd.Series):
 # Public API
 # --------------------------------------------------------------------------
 def _eligible(feat: _Featurizer) -> pd.Series:
-    """Rows with enough evidence to predict: an MC category or ≥N siblings."""
-    return feat.has_mc | feat.n_dia.ge(MIN_OTHER_SOURCES)
+    """Rows with enough evidence to predict: an MC category, ≥N sibling
+    readings, or a known phonetic series (kPhonetic) — series-mates share a
+    rhyme lineage, so the gate can judge those predictions honestly too."""
+    return feat.has_mc | feat.n_dia.ge(MIN_OTHER_SOURCES) | feat.has_phon
 
 
 def _wilson_lower(k: int, n: int, z: float = CALIB_Z) -> float:
