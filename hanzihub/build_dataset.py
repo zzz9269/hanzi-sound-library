@@ -64,9 +64,11 @@ def main(argv: list[str] | None = None) -> None:
 
     long_df.to_parquet(paths.READINGS_LONG, index=False)
     wide_df.to_csv(paths.COMBINED_CSV, index=False, encoding="utf-8")
+    # fast-load mirror for the app (written AFTER the csv so its mtime is newer)
+    wide_df.to_parquet(paths.COMBINED_PARQUET, index=False)
 
     print(f"[build] wrote {paths.READINGS_LONG}")
-    print(f"[build] wrote {paths.COMBINED_CSV}")
+    print(f"[build] wrote {paths.COMBINED_CSV} (+ .parquet mirror)")
     print(f"[build] done in {time.time() - t0:.1f}s")
 
 

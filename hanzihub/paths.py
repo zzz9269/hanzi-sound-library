@@ -50,6 +50,7 @@ QIEYUN_CACHE = RAW_DIR / "qieyun"
 # ---- Build outputs ----
 READINGS_LONG = OUT_DIR / "readings_long.parquet"   # canonical, fully provenanced
 COMBINED_CSV = OUT_DIR / "combined_readings.csv"     # wide, app-facing
+COMBINED_PARQUET = OUT_DIR / "combined_readings.parquet"  # fast app-load mirror
 
 
 def ensure_dirs() -> None:

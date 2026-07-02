@@ -1,0 +1,8 @@
+# The app's inline HTML hardcodes dark-theme colours (scraper iframes, chips,
+# section headers) — pin the base theme so a light-mode OS doesn't make panels
+# unreadable.
+[theme]
+base = "dark"
+
+[browser]
+gatherUsageStats = false

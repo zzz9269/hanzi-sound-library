@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import html as _html
+import logging
 import re
 import time
 import urllib.parse
@@ -18,21 +19,27 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+log = logging.getLogger("hanzihub")
+
 _WIKT_API = "https://en.wiktionary.org/w/api.php"
 
 
 def _wikt_api(params, retries=3):
     """GET the Wiktionary parse API as JSON, retrying transient failures
     (rate-limit / non-JSON responses). ``{}`` if all attempts fail."""
+    err = None
     for i in range(retries):
         try:
             r = requests.get(_WIKT_API, params={**params, "format": "json"},
                              headers=_JD_HEADERS, timeout=20)
             r.raise_for_status()
             return r.json()
-        except Exception:
+        except Exception as e:
+            err = e
             if i < retries - 1:
                 time.sleep(1.0 + i)
+    log.warning("Wiktionary API failed after %d tries (%s): %s",
+                retries, params.get("page", "?"), err)
     return {}
 
 # {{zh-pron}} parameter → the app's Sinitic-topolect column

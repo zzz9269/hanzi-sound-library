@@ -12,6 +12,7 @@ import csv
 import hashlib
 import html as _html
 import itertools
+import logging
 import os
 import re
 import sys
@@ -22,6 +23,11 @@ from pathlib import Path
 import pandas as pd
 
 from . import paths
+
+# Silent-degradation points (missing credentials, dead scraper, unreadable
+# cache) log here instead of vanishing — enable with
+# ``logging.basicConfig(level=logging.INFO)`` or via Streamlit's logger config.
+log = logging.getLogger("hanzihub")
 
 sys.path.insert(0, str(paths.ROOT))  # for the repo-root kana_romaji_utils module
 
@@ -68,7 +74,8 @@ def translate_client():
         legacy = paths.ROOT / "TTS" / "tts-robot-key.json"
         return (translate.TranslationServiceClient.from_service_account_file(str(legacy))
                 if legacy.exists() else translate.TranslationServiceClient())
-    except Exception:
+    except Exception as e:
+        log.warning("translate client unavailable: %s", e)
         return None
 
 
@@ -77,7 +84,8 @@ def tts_client():
     try:
         from google.cloud import texttospeech as gcp_tts
         return gcp_tts.TextToSpeechClient()
-    except Exception:
+    except Exception as e:
+        log.warning("TTS client unavailable: %s", e)
         return None
 
 
@@ -95,7 +103,8 @@ def gtrans_translate_text(text: str, target: str, source: str | None = None) -> 
             req["source_language_code"] = source
         resp = cli.translate_text(request=req)
         return resp.translations[0].translated_text or "" if resp.translations else ""
-    except Exception:
+    except Exception as e:
+        log.warning("translate_text failed: %s", e)
         return ""
 
 
@@ -107,7 +116,8 @@ def gtrans_romanize(text: str, source_lang: str) -> str:
         resp = cli.romanize_text(request={
             "parent": PARENT, "contents": [text], "source_language_code": source_lang})
         return resp.romanizations[0].romanized_text or "" if resp.romanizations else ""
-    except Exception:
+    except Exception as e:
+        log.warning("romanize_text failed: %s", e)
         return ""
 
 
@@ -124,7 +134,8 @@ def char_meta() -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        log.warning("char_meta cache unreadable: %s", e)
         return {}
 
 
@@ -211,7 +222,8 @@ def audio_html(text: str, lang: str, voice: str, label: str | None = None) -> st
     """Inline autoplay-off <audio> player with a clickable label."""
     try:
         mp3 = tts_bytes(text, lang, voice)
-    except Exception:
+    except Exception as e:
+        log.info("TTS synth failed for %r: %s", text, e)
         return _html.escape(label or text)
     b64 = base64.b64encode(mp3).decode("utf-8")
     return ('<audio controls preload="none" style="height:28px;vertical-align:middle">'
@@ -343,23 +355,47 @@ def sorted_cols(cols):
 # =====================================================================
 # Data loading
 # =====================================================================
+def _read_wide_table(csv_path: str) -> pd.DataFrame:
+    """Read the wide table, via a self-maintaining parquet mirror: if a sibling
+    ``.parquet`` at least as new as the CSV exists it is read instead (~10×
+    faster); otherwise the CSV is read and the mirror is (best-effort) written
+    for next start."""
+    p_csv = Path(csv_path)
+    p_parq = p_csv.with_suffix(".parquet")
+    try:
+        if p_parq.exists() and p_parq.stat().st_mtime >= p_csv.stat().st_mtime:
+            return pd.read_parquet(p_parq).fillna("").astype(str)
+    except Exception as e:
+        log.warning("parquet mirror unreadable (%s) — falling back to CSV", e)
+    df = pd.read_csv(p_csv, dtype=str, keep_default_na=False)
+    try:
+        df.to_parquet(p_parq, index=False)
+    except Exception as e:
+        log.info("could not write parquet mirror: %s", e)
+    return df
+
+
 def load_combined(csv_path: str = COMBINED_CSV):
-    df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    df = _read_wide_table(csv_path)
     cols = list(df.columns)
     ch_col = next((c for c in cols if _norm(c) in {"char", "character", "zi", "漢字", "字"}), cols[0])
     excl = {re.sub(r"\s+", " ", c.lower()) for c in EXCLUDE_COLS}
     dialect_cols = [c for c in cols if c != ch_col
                     and re.sub(r"\s+", " ", c.lower()) not in excl]
+    # Vectorised build (iterrows took ~19s on 67k×99; this takes <2s): pull the
+    # value matrix once and zip; NFC-normalise only non-ASCII values.
+    _nfc = unicodedata.normalize
+    chars = df[ch_col].astype(str).str.strip()
+    values = df[dialect_cols].to_numpy()
     data = {}
-    for _, row in df.iterrows():
-        ch = str(row[ch_col]).strip()
+    for ch, row in zip(chars.to_numpy(), values):
         if len(ch) != 1:
             continue
         bucket = {}
-        for d in dialect_cols:
-            val = str(row[d]).strip()
-            if val and val.lower() != "nan" and val != "-":
-                bucket[d] = unicodedata.normalize("NFC", val)
+        for d, val in zip(dialect_cols, row):
+            v = val.strip()
+            if v and v != "-" and v.lower() != "nan":
+                bucket[d] = v if v.isascii() else _nfc("NFC", v)
         if bucket:
             data[ch] = bucket
     return data, dialect_cols
@@ -371,7 +407,8 @@ def load_provenance(root=None) -> dict:
         return {}
     try:
         ldf = pd.read_parquet(p)
-    except Exception:
+    except Exception as e:
+        log.warning("provenance parquet unreadable: %s", e)
         return {}
     keep = [c for c in ("char", "column", "reading", "source", "conf") if c in ldf.columns]
     prov: dict[str, list] = {}
