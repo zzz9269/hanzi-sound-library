@@ -984,6 +984,75 @@ def remove_cjk_chars(text: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# 反切 (fanqie) breakdown — show HOW the traditional spelling works.
+# A fanqie spells a syllable with two characters: the UPPER gives the initial,
+# the LOWER gives the final + tone. Both spellers usually have their own
+# Baxter Middle Chinese transcription in the dataset, so we can decompose them
+# and recompose the target: 他前 → th(a) + (dz)en → "then".
+# --------------------------------------------------------------------------
+# Baxter MC initials, longest-first ('y' can BE the initial 以, but after a
+# sibilant it is part of the palatal digraph: syo = ɕ + o, not s + yo).
+_BAXTER_INITIALS = sorted(
+    ["tsyh", "tsrh", "tsh", "trh", "dzr", "tsy", "dzy", "tsr", "ny", "sy",
+     "zy", "tr", "dr", "nr", "sr", "zr", "ts", "dz", "ph", "th", "kh", "ng",
+     "hj", "p", "b", "m", "t", "d", "n", "k", "g", "x", "h", "z", "s", "l",
+     "y", "w", "j", "'"],
+    key=len, reverse=True)
+_BAXTER_TONE = {"X": "上 rising", "H": "去 departing"}
+
+
+def baxter_parts(mc: str) -> tuple[str, str, str] | None:
+    """Split one Baxter MC transcription into ``(initial, final, tone-label)``.
+    ``dzyangX`` → ``("dzy", "ang", "上 rising")``; ``nyip`` → ``("ny", "ip",
+    "入 entering")``; ``then`` → ``("th", "en", "平 level")``."""
+    s = (mc or "").strip()
+    if not s:
+        return None
+    tone = "平 level"
+    if s[-1] in _BAXTER_TONE:
+        tone, s = _BAXTER_TONE[s[-1]], s[:-1]
+    elif s[-1] in "ptk":
+        tone = "入 entering"
+    onset = next((i for i in _BAXTER_INITIALS if s.startswith(i)), "")
+    return onset, s[len(onset):], tone
+
+
+def parse_fanqie_pairs(val: str) -> list[str]:
+    """Distinct two-character fanqie spellings from a cell. Handles ``|`` and
+    space separators and the ``X〈Y〉`` editorial correction (→ Y)."""
+    pairs: list[str] = []
+    for tok in re.split(r"[|\s]+", (val or "").strip()):
+        tok = re.sub(r".〈(.)〉", r"\1", tok.strip())
+        if len(tok) == 2 and _HANZI_RE.search(tok) and tok not in pairs:
+            pairs.append(tok)
+    return pairs
+
+
+def fanqie_explain(pair: str, upper_mc: str, lower_mc: str,
+                   target_mc: str = "") -> dict | None:
+    """Decompose one fanqie spelling using the spellers' own MC readings.
+
+    Returns ``{upper, lower, initial, final, tone, composed, matches}`` where
+    ``composed`` is initial+final(+tone mark) in Baxter letters and ``matches``
+    says whether it equals one of the target's own MC readings (``None`` when
+    the target MC is unknown). Any missing speller reading → ``None``."""
+    up = baxter_parts((upper_mc or "").split("|")[0])
+    lo = baxter_parts((lower_mc or "").split("|")[0])
+    if not up or not lo or len(pair) != 2:
+        return None
+    initial, (_, final, tone) = up[0], lo
+    mark = {"上 rising": "X", "去 departing": "H"}.get(tone, "")
+    composed = initial + final + mark
+    targets = [t.strip() for t in (target_mc or "").split("|") if t.strip()]
+    return {
+        "upper": pair[0], "lower": pair[1],
+        "initial": initial or "∅", "final": final, "tone": tone,
+        "composed": composed,
+        "matches": (composed in targets) if targets else None,
+    }
+
+
+# --------------------------------------------------------------------------
 # Middle Chinese 音韻地位 (Qieyun position) — decode the compact codes
 # A code is: 母(initial) + 呼(開/合, opt) + 等(一二三四, opt) + 重紐(A/B, opt)
 #            + 韻(rime) + 聲(平上去入 tone). e.g. 心合一寒平.

@@ -18,6 +18,7 @@ import streamlit.components.v1 as components
 
 from hanzihub import appkit as ak
 from hanzihub import scrapers as sc
+from hanzihub import soundlaws
 from hanzihub import paths
 
 st.set_page_config(page_title="漢字音庫 — Hanzi Sound Library", layout="wide")
@@ -320,6 +321,29 @@ def _reading_row(ch, dialect, val, wikt=None):
         play_row(f"<b>{_html.escape(dialect)}:</b> {ak.render_readings_html(val, dialect)} "
                  f"{spk(ch, ak.VOICE_YUE)}", height=40)
         return
+    if dialect == "Fanqie":
+        # 反切: upper char = initial, lower char = final + tone. Decompose each
+        # spelling with the spellers' own Baxter MC readings from the dataset.
+        md(f"**{dialect}:** `{ak.inline_tokens(val)}`")
+        target_mc = DATA.get(ch, {}).get("Middle Chinese", "")
+        for pair in ak.parse_fanqie_pairs(val)[:3]:
+            info = ak.fanqie_explain(
+                pair,
+                DATA.get(pair[0], {}).get("Middle Chinese", ""),
+                DATA.get(pair[1], {}).get("Middle Chinese", ""),
+                target_mc)
+            if not info:
+                continue
+            tick = (" <span style='color:#6fb96f'>= its MC ✓</span>"
+                    if info["matches"] else "")
+            md("<span style='color:#9aa7bd;font-size:.85em'>&nbsp;&nbsp;↳ "
+               f"<b style='color:#bfe9bf'>{info['upper']}</b> gives the initial "
+               f"<code>{_html.escape(info['initial'])}-</code> ＋ "
+               f"<b style='color:#bfe9bf'>{info['lower']}</b> gives the final "
+               f"<code>-{_html.escape(info['final'])}</code> and the "
+               f"{_html.escape(info['tone'])} tone → "
+               f"<code>{_html.escape(info['composed'])}</code>{tick}</span>")
+        return
     if dialect == "Middle Chinese (position)":
         codes = [c.strip() for c in re.split(r"\s*\|\s*", val) if c.strip()]
         md(f"**{dialect}:** `{'   ·   '.join(codes)}`")
@@ -559,6 +583,11 @@ def _node_reading(bucket, cols, wikt):
 
 
 def evolution_dot(ch, bucket, wikt=None):
+    # Per-branch sound-law notes derived from THIS character's 音韻地位 —
+    # shown as hover tooltips on the tree nodes.
+    _mc_code = re.split(r"\s*\|\s*",
+                        bucket.get("Middle Chinese (position)", ""))[0].strip()
+    law_notes = soundlaws.edge_notes(_mc_code) if _mc_code else {}
     _info = {n[0]: (_node_reading(bucket, n[3], wikt) if n[3] else ("", False)) for n in _EVO}
     reading = {k: v[0] for k, v in _info.items()}
     is_ml = {k: v[1] for k, v in _info.items()}
@@ -608,8 +637,14 @@ def evolution_dot(ch, bucket, wikt=None):
                        f'vowel {round(pc * 100)}%</font>')
         ml_attr = (' color="#e0a846" penwidth=1.3 style="filled,rounded,dashed"'
                    if is_ml.get(nid) else "")
+        # hover tooltip: the regular sound changes that produced this branch's
+        # form of THIS character (from its 音韻地位)
+        tip_attr = ""
+        if law_notes.get(nid):
+            tip = "\\n".join("• " + t.replace('"', "'") for t in law_notes[nid])
+            tip_attr = f' tooltip="{tip}"'
         nodes.append(f'{nid} [label=<{head}<b>{_h(name)}</b>{rd}{ml}{er}> '
-                     f'fillcolor="{fill}"{ml_attr}];')
+                     f'fillcolor="{fill}"{ml_attr}{tip_attr}];')
         anchor = _anchor(nid)
         if anchor:
             extra = ' style=dashed color="#9a7bb5"' if style == "dashed" else ""
@@ -646,7 +681,9 @@ def render_single(ch: str):
 
     with st.expander("🌳 Sound evolution (Old Chinese → today)", expanded=True):
         st.graphviz_chart(evolution_dot(ch, bucket, wikt), width="content")
-        st.caption("Cantonese is *not* Mandarin's ancestor — the modern branches are cousins "
+        st.caption("**Hover a branch node** to see the regular sound changes that produced "
+                   "this character's form there (derived from its Middle Chinese category). "
+                   "Cantonese is *not* Mandarin's ancestor — the modern branches are cousins "
                    "from Middle Chinese; **Min** (teal) split off early; **dashed purple** = borrowed "
                    "into Japanese/Korean/Vietnamese; an **amber dashed border + “ML-predicted”** marks a "
                    "reading inferred by the model (🤖 ML in the panel above), not attested in a source. "

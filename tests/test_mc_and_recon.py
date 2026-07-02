@@ -55,3 +55,25 @@ def test_locality_table_is_39_points():
     from hanzihub import schema
     assert len(schema.LOCALITIES) == 39
     assert schema.locality_col(schema.LOCALITIES[0]) == "dial:Mandarin-Beijing"
+
+
+# ----------------------------------------------------------- fanqie 反切 --
+def test_baxter_parts():
+    assert ak.baxter_parts("dzyangX") == ("dzy", "ang", "上 rising")
+    assert ak.baxter_parts("nyip") == ("ny", "ip", "入 entering")
+    assert ak.baxter_parts("then") == ("th", "en", "平 level")
+    assert ak.baxter_parts("syo") == ("sy", "o", "平 level")  # sy is ONE initial
+    assert ak.baxter_parts("") is None
+
+
+def test_parse_fanqie_pairs():
+    assert ak.parse_fanqie_pairs("時掌 時亮 | 時亮") == ["時掌", "時亮"]
+    assert ak.parse_fanqie_pairs("近〈丘〉倨") == ["丘倨"]  # editorial correction
+    assert ak.parse_fanqie_pairs("") == []
+
+
+def test_fanqie_explain_recomposes_target():
+    info = ak.fanqie_explain("他前", "tha", "dzen", "then | xen")
+    assert info["initial"] == "th" and info["final"] == "en"
+    assert info["composed"] == "then" and info["matches"] is True
+    assert ak.fanqie_explain("他前", "", "dzen") is None
