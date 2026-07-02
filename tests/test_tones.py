@@ -102,3 +102,21 @@ def test_has_ipa():
     assert ak.has_ipa("tʰĩ˥")
     assert not ak.has_ipa("tiang1")
     assert not ak.has_ipa("")
+
+
+# ------------------------------------------------- reading reverse index --
+def test_fold_reading_query():
+    assert ak.fold_reading_query("tiān") == "tian"
+    assert ak.fold_reading_query("Thiên ") == "thien"
+
+
+def test_build_reading_index_tokens_and_tone_stripping():
+    data = {"天": {"Mandarin": "tiān", "Cantonese": "tin1 | tʰiːn˥",
+                   "Definition": "sky"},
+            "先": {"Cantonese": "sin1 | tin1"}}
+    idx = ak.build_reading_index(data)
+    assert set(idx["tian"]) == {"天"}
+    assert set(idx["tin1"]) == {"天", "先"}   # exact with tone digit
+    assert set(idx["tin"]) == {"天", "先"}    # tone-stripped
+    assert "sky" not in idx                    # Definition not indexed
+    assert "tʰiːn˥".lower() not in idx         # IPA not latin → not indexed

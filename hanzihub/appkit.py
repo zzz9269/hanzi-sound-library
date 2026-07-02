@@ -399,6 +399,41 @@ def load_combined(csv_path: str = COMBINED_CSV):
     return data, dialect_cols
 
 
+# --------------------------------------------------------------------------
+# Romanisation reverse index: latin reading token → {char: {columns}}
+# Lets the search box accept "tian", "tin1", "then" (Baxter MC!), "ten",
+# "thien" … and find the characters that carry that reading in any column.
+# --------------------------------------------------------------------------
+_LATIN_TOKEN_RE = re.compile(r"[a-z0-9'\-]+")
+
+
+def fold_reading_query(q: str) -> str:
+    """Diacritic-stripped, lowercased form of a reading query (tiān → tian)."""
+    base = unicodedata.normalize("NFD", (q or "").strip())
+    return "".join(c for c in base if not unicodedata.combining(c)).lower()
+
+
+def build_reading_index(data: dict) -> dict[str, dict[str, set]]:
+    """token → {char: {columns it appears in}} over all non-locality columns.
+    Tokens are indexed both as-is (tin1) and tone-digit-stripped (tin)."""
+    idx: dict[str, dict[str, set]] = {}
+    for ch, bucket in data.items():
+        for col, val in bucket.items():
+            if col.startswith("dial:") or col == "Definition":
+                continue
+            for tok in re.split(r"[\s|/,;·()\[\]]+", val):
+                tok = fold_reading_query(tok.strip("*[](){}"))
+                if not (1 < len(tok) <= 12) or not _LATIN_TOKEN_RE.fullmatch(tok):
+                    continue
+                keys = {tok}
+                bare = tok.rstrip("0123456789")
+                if len(bare) > 1:
+                    keys.add(bare)
+                for k in keys:
+                    idx.setdefault(k, {}).setdefault(ch, set()).add(col)
+    return idx
+
+
 def load_provenance(root=None) -> dict:
     p = Path(root or paths.ROOT) / "data" / "out" / "readings_long.parquet"
     if not p.exists():

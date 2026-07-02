@@ -41,6 +41,11 @@ def load_all():
 DATA, DIALECT_COLS, PROV, SYMBOLS = load_all()
 
 
+@st.cache_resource(show_spinner="Indexing readings…")
+def reading_index():
+    return ak.build_reading_index(DATA)
+
+
 # --------------------------------------------------------- cached network ---
 @st.cache_data(show_spinner=False)
 def c_translate(text, target, source=None):
@@ -827,6 +832,35 @@ def render_multi(text: str):
 
 
 # =====================================================================
+# Reading lookup (romanisation → characters)
+# =====================================================================
+def render_reading_hits(q: str, hits: dict):
+    """Characters carrying the queried reading (pinyin/jyutping/on'yomi/
+    Baxter MC/…), richest-documented first, with drill-down buttons."""
+    st.subheader(f"Characters read “{q}”")
+    chars = sorted(hits, key=lambda c: -len(DATA.get(c, {})))
+    st.caption(f"{len(chars)} character(s) carry this reading in some column "
+               "(tone digits are ignored unless you type them).")
+    per_row = 10
+    for start in range(0, min(len(chars), 60), per_row):
+        row = chars[start:start + per_row]
+        cols = st.columns(per_row)
+        for col, ch in zip(cols, row):
+            col.button(ch, key=f"rhit_{ch}", use_container_width=True,
+                       on_click=lambda c=ch: st.session_state.update(query=c))
+    body = ["<tr><th>Char</th><th>Definition</th><th>Matched in</th></tr>"]
+    for ch in chars[:15]:
+        defn = DATA.get(ch, {}).get("Definition", "")[:80]
+        body.append(f"<tr><td style='font-size:1.4em'>{_html.escape(ch)}</td>"
+                    f"<td>{_html.escape(defn)}</td>"
+                    f"<td style='color:#9aa7bd'>{_html.escape(', '.join(sorted(hits[ch])))}</td></tr>")
+    scraper_html("<table>" + "".join(body) + "</table>",
+                 height=min(560, 70 + 15 * 30))
+    if st.checkbox(f"Also search “{q}” as an English word"):
+        render_reverse(q)
+
+
+# =====================================================================
 # Reverse lookup (English)
 # =====================================================================
 def render_reverse(en: str):
@@ -943,4 +977,11 @@ elif not q:
 elif ak.looks_like_hanzi(q):
     render_single(q) if len(q) == 1 else render_multi(q)
 else:
-    render_reverse(q)
+    # single latin token that IS a known reading → reading lookup;
+    # anything else (phrases, unknown words) → English reverse lookup
+    _hits = (reading_index().get(ak.fold_reading_query(q))
+             if re.fullmatch(r"[A-Za-zÀ-ÿĀ-ſ0-9'\-]+", q) else None)
+    if _hits:
+        render_reading_hits(q, _hits)
+    else:
+        render_reverse(q)
