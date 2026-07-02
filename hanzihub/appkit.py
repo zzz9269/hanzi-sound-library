@@ -851,9 +851,12 @@ TONE_CLASS_SCHEME = {
     "Cantonese": "jyutping", "Teochew": "teochew",
     "Hainanese (Haikou)": "haikou", "dial:Min-Haikou": "haikou",
 }
-# columns whose superscripts are tone CATEGORIES, not pitch — never convert
+# columns whose digits are tone CATEGORIES, not pitch — never convert.
+# (dial:Hui-Tunxi: MCPDict 屯溪 has no verified 調值 table, so its readings
+# keep the honest class digit; converting 1→˩ would assert a false pitch.)
 CHAO_EXEMPT_COLS = {"Proto-Min", "Middle Chinese (Baxter)", "Middle Chinese",
-                    "Old Chinese", "Old Chinese (Zhengzhang)", "Tang"}
+                    "Old Chinese", "Old Chinese (Zhengzhang)", "Tang",
+                    "dial:Hui-Tunxi"}
 
 # IPA-only markers — tone letters, modifier letters, combining diacritics and
 # IPA-exclusive symbols. Distinguishes a true IPA reading (tʰĩ˥) from a plain

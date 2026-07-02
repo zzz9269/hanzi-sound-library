@@ -64,7 +64,7 @@ sources ──► hanzihub.merge ──► data/out/readings_long.parquet   (can
 | **nk2028 qieyun-data (廣韻)** | Fanqie + Middle Chinese rime position | ~19k |
 | **Wiktionary `dial-pron`** | 39 locality-level IPA readings incl. Min: Fuzhou/Jian'ou/Shantou/Haikou | ~1k common chars |
 | **kaikki.org** (machine-readable Wiktionary) | per-character locality IPA across ~45 points — Min Dong (Fuzhou), Min Bei (Jian'ou), Quanzhou/Zhangzhou/Taipei/Penang, Ningbo/Chongming, Taishan, the Hakka sub-lects, etc. | ~17.6k chars |
-| **漢字音典 / MCPDict** (`osfans/MCPDict`) | the two points absent from Wiktionary: Hainanese (Haikou) + Hui (Shexian) | ~3.8k / ~1.7k chars |
+| **漢字音典 / MCPDict** (`osfans/MCPDict`) | Haikou (Hainanese) + Hui (Shexian), and since 2026-07 Suzhou, Wenzhou, Pingyao, Tunxi, Xiangtan, Nanning + **Shuangfeng (Old Xiang)** — per-table vetted tone semantics | ~48k records over 9 points |
 | **kaikki.org Okinawan** | Okinawan (Ryukyuan) kanji readings (kana + romanisation) | ~185 chars |
 
 The **long table** (`readings_long.parquet`) stores one row per
