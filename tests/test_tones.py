@@ -120,3 +120,11 @@ def test_build_reading_index_tokens_and_tone_stripping():
     assert set(idx["tin"]) == {"天", "先"}    # tone-stripped
     assert "sky" not in idx                    # Definition not indexed
     assert "tʰiːn˥".lower() not in idx         # IPA not latin → not indexed
+
+
+def test_plain_ascii_multidigit_contour_converts():
+    # dial-pron stores some contours as plain ASCII with no IPA marker
+    assert ak.tones_to_chao("pin13", "dial:Xiang-Changsha") == "pin˩˧"
+    # single class digits stay (Jyutping/Haikou/Tunxi semantics)
+    assert ak.tones_to_chao("hi1", None) == "hi1"
+    assert ak.tones_to_chao("tsɿ1", "dial:Hui-Tunxi") == "tsɿ1"

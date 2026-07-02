@@ -896,6 +896,13 @@ def tones_to_chao(val: str, column: str | None = None) -> str:
         # inside an IPA reading a trailing digit run IS a Chao-numeral contour
         s = _TONE_DIGIT_RUN_RE.sub(
             lambda m: contour_to_chao(m.group(0)) or m.group(0), s)
+    else:
+        # plain-ASCII reading: a run of TWO+ digits all 1–5 is still a contour
+        # ('pin13' from dial-pron) — tone-class digits are always single, so
+        # length ≥2 disambiguates ('tin1' Jyutping / 'hi1' Haikou untouched).
+        s = _TONE_DIGIT_RUN_RE.sub(
+            lambda m: (contour_to_chao(m.group(0)) or m.group(0))
+            if len(m.group(0)) >= 2 else m.group(0), s)
     return s
 
 
