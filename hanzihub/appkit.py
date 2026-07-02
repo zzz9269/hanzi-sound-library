@@ -15,7 +15,6 @@ import itertools
 import logging
 import os
 import re
-import sys
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
@@ -23,13 +22,12 @@ from pathlib import Path
 import pandas as pd
 
 from . import paths
+from .schema import PREFERRED_ORDER  # single source of truth (was drifting here)
 
 # Silent-degradation points (missing credentials, dead scraper, unreadable
 # cache) log here instead of vanishing — enable with
 # ``logging.basicConfig(level=logging.INFO)`` or via Streamlit's logger config.
 log = logging.getLogger("hanzihub")
-
-sys.path.insert(0, str(paths.ROOT))  # for the repo-root kana_romaji_utils module
 
 # --------------------------------------------------------------- voices ----
 VOICE_JA = ("ja-JP", "ja-JP-Wavenet-B")
@@ -46,17 +44,6 @@ COMBINED_CSV = str(paths.COMBINED_CSV if paths.COMBINED_CSV.exists()
                    else paths.LEGACY_COMBINED_CSV)
 IPA_FILE = str(paths.IPA_LIBRARY_TXT)
 CACHE_DIR = str(paths.ROOT / "cache")
-
-PREFERRED_ORDER = [
-    "Definition", "Mandarin", "Cantonese", "Hokkien", "Teochew",
-    "Eastern Min (Fuzhou)", "Northern Min (Jian'ou)", "Hainanese (Haikou)",
-    "Hakka", "Wu", "Hui (Shexian)", "Gan", "Xiang", "Jin",
-    "Middle Chinese", "Middle Chinese (Baxter)", "Middle Chinese (position)",
-    "Tang", "Fanqie", "fanqie_upper", "fanqie_lower",
-    "Old Chinese", "Old Chinese (Zhengzhang)", "Proto-Min", "Vietnamese", "Zhuang",
-    "Japanese", "Japanese On", "Japanese Kun", "Okinawan",
-    "Korean (Hangul)", "Korean (romanized)", "Korean (Yale)",
-]
 
 _RE_HANGUL = re.compile(r"[ᄀ-ᇿ㄰-㆏가-힯]+")
 _HANZI_RE = re.compile(r"[㐀-鿿\U00020000-\U0002FFFF]")
@@ -266,11 +253,22 @@ def prep_ja_tts(kana: str, fallback_kanji: str) -> str:
     return kana_hira_to_kata(k) if k else fallback_kanji
 
 
+@lru_cache(maxsize=1)
+def _kana_romaji_mod():
+    """Load the repo-root ``kana_romaji_utils.py`` by path — no sys.path hack."""
+    import importlib.util
+    p = paths.ROOT / "kana_romaji_utils.py"
+    spec = importlib.util.spec_from_file_location("kana_romaji_utils", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def romaji_to_hiragana(s: str) -> str:
     try:
-        from kana_romaji_utils import romaji_to_hiragana as _r
-        return _r(s)
-    except Exception:
+        return _kana_romaji_mod().romaji_to_hiragana(s)
+    except Exception as e:
+        log.info("romaji_to_hiragana failed: %s", e)
         return ""
 
 

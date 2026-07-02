@@ -7,12 +7,15 @@ callback ``tts(text, lang, voice) -> mp3 bytes`` so this module stays UI-free).
 from __future__ import annotations
 
 import base64
+import functools
 import html as _html
+import json
 import logging
 import re
 import time
 import urllib.parse
 from io import StringIO
+from pathlib import Path
 from urllib.parse import quote_plus
 
 import pandas as pd
@@ -22,6 +25,49 @@ from bs4 import BeautifulSoup
 log = logging.getLogger("hanzihub")
 
 _WIKT_API = "https://en.wiktionary.org/w/api.php"
+
+# ---------------------------------------------------------------------------
+# Per-character disk cache for the live Wiktionary fetches. Streamlit's
+# st.cache_data is per-session memory only — every app restart re-hit the
+# network for the same characters. Entries change rarely, so cache to JSON
+# under cache/wikt/<kind>/ with a 30-day TTL; failed/empty fetches are NOT
+# cached (a network blip must not pin an empty panel for a month).
+# ---------------------------------------------------------------------------
+_WIKT_CACHE_DIR = Path(__file__).resolve().parent.parent / "cache" / "wikt"
+_WIKT_CACHE_TTL = 30 * 86400
+
+
+def _wikt_cache_path(kind: str, char: str) -> Path:
+    cp = "-".join(f"{ord(c):X}" for c in char[:4])
+    d = _WIKT_CACHE_DIR / kind
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{cp}.json"
+
+
+def _disk_cached(kind):
+    """Decorator: JSON disk cache keyed on the first (char) argument."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(char, *args, **kwargs):
+            c = (char or "").strip()
+            if not c:
+                return fn(char, *args, **kwargs)
+            p = _wikt_cache_path(kind, c)
+            try:
+                if p.exists() and time.time() - p.stat().st_mtime < _WIKT_CACHE_TTL:
+                    return json.loads(p.read_text(encoding="utf-8"))
+            except Exception as e:
+                log.info("wikt cache read failed (%s): %s", kind, e)
+            val = fn(char, *args, **kwargs)
+            if val:
+                try:
+                    p.write_text(json.dumps(val, ensure_ascii=False),
+                                 encoding="utf-8")
+                except Exception as e:
+                    log.info("wikt cache write failed (%s): %s", kind, e)
+            return val
+        return wrapper
+    return deco
 
 
 def _wikt_api(params, retries=3):
@@ -125,6 +171,7 @@ def _parse_hakka(hv):
     return " / ".join(out[:2])
 
 
+@_disk_cached("readings")
 def fetch_wiktionary_readings(char):
     """Live: parse a character's {{zh-pron}} template → {column: romanisation}
     for the Sinitic topolects (Mandarin pinyin, Cantonese jyutping, Hokkien POJ,
@@ -157,6 +204,7 @@ def fetch_wiktionary_readings(char):
     return out
 
 
+@_disk_cached("glyph")
 def fetch_glyph_origin_html(char: str) -> str:
     """Return cleaned HTML of a character's Wiktionary *Glyph origin* section
     (etymology prose + the oracle-bone→seal historical-forms images), or ``""``.
@@ -285,6 +333,7 @@ def _clean_entry_root(html):
     return root
 
 
+@_disk_cached("entry")
 def fetch_wiktionary_entry(char):
     """Live: the full Wiktionary entry per language (Chinese/Japanese/Korean/
     Vietnamese): etymology, definitions, descendants, usage notes … minus
