@@ -1,0 +1,25 @@
+
+Held-out evaluation (MC weight=3.0, per-target gate ≥88% precision):
+                 target  n_test  onset  rhyme  tone  top1  gate  coverage  precision  n_accept
+              Cantonese    5270  0.857  0.823 0.799 0.661  0.85     0.424      0.892      2235
+                Hokkien    1238  0.810  0.643 0.735 0.605  0.95     0.199      0.907       246
+                Teochew    1541  0.832  0.758 0.756 0.555   NaN     0.000        NaN         0
+                  Hakka     979  0.805  0.516 0.647 0.406   NaN     0.000        NaN         0
+                     Wu     613  0.838  0.716 0.819 0.615  0.95     0.266      0.939       163
+                    Gan     356  0.919  0.778 0.848 0.654   NaN     0.000        NaN         0
+                  Xiang     451  0.827  0.756 0.783 0.557   NaN     0.000        NaN         0
+                    Jin     443  0.907  0.729 0.758 0.589  0.90     0.291      0.884       129
+   Eastern Min (Fuzhou)     779  0.887  0.716 0.873 0.677   NaN     0.000        NaN         0
+ Northern Min (Jian'ou)     416  0.901  0.772 0.656 0.498   NaN     0.000        NaN         0
+     Hainanese (Haikou)     768  0.803  0.736 0.736 0.535   NaN     0.000        NaN         0
+          Hui (Shexian)     336  0.804  0.643 0.869 0.497   NaN     0.000        NaN         0
+Middle Chinese (Baxter)    2470  0.896  0.916 0.947 0.845  0.50     0.863      0.923      2132
+
+Accepted-precision vs. confidence threshold (all targets pooled):
+ thresh   precision   coverage   n
+  0.30       0.698      0.887    13891
+  0.40       0.729      0.823    12887
+  0.50       0.760      0.747    11694
+  0.60       0.797      0.663    10388
+  0.70       0.831      0.580     9076
+  0.80       0.866      0.488     7638
