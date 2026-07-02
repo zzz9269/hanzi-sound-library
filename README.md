@@ -14,11 +14,34 @@ streamlit run app.py          # opens the lookup UI in your browser
 
 The Streamlit UI (`app.py`, logic in `hanzihub/appkit.py` + `hanzihub/scrapers.py`)
 shows per-topolect IPA with a **rough English approximation**, machine-predicted
-readings flagged `ᴹᴸ`, a collapsible 39-point locality layer, per-reading
+readings flagged `🤖 ML`, a collapsible locality layer (~55 points), per-reading
 provenance, TTS for Mandarin/Cantonese/Japanese/Korean/Vietnamese, a per-character
 **glyph-origin** panel (Wiktionary historical forms + etymology, fetched on
-demand), and live JapanDict / koreanhanja / Nôm lookups. (The original
-`漢字音庫_v9.ipynb` notebook remains as a legacy front-end.)
+demand and disk-cached), and live JapanDict / koreanhanja / Nôm lookups. (The
+original `漢字音庫_v9.ipynb` notebook remains as a legacy front-end.)
+
+Notable engine features:
+
+* **Unified Chao tone letters** — every pitch contour displays as tone letters
+  (`tin˥˥`, `tʰieŋ˥˥`); tone-*class* digits (Jyutping/Peng'im/Haikou/Wugniu)
+  are mapped through per-scheme citation-contour tables; tone-*category*
+  superscripts (Proto-Min `*tʰin¹`, Baxter MC `tʰen¹`) are deliberately left
+  as numbers. See Guides → Tone contour guide.
+* **Sound-evolution tree with per-character sound laws** — hover a branch node
+  to see which regular changes (入聲 loss/retention, 全濁 devoicing reflexes,
+  palatalisation, Min pre-split archaisms, Sino-Xenic coda adaptations)
+  applied to *this* character, derived from its 音韻地位 (`hanzihub/soundlaws.py`).
+* **反切 breakdown** — each fanqie spelling is decomposed with the speller
+  characters' own MC readings (他前 → `th-` + `-en` 平 → `then` ✓).
+* **Reading search** — type `tian`, `tin1`, `thien`, or even Baxter MC `then`
+  in the search box to find characters by any romanised reading.
+* **Min tone sandhi hints** — Hokkien (tone circle) and Teochew readings show
+  their non-final sandhi contour.
+* **Markdown export** — download a per-character report (readings, locality
+  layer, provenance).
+
+Run the test suite with `python -m pytest tests` (fast, pure-function coverage
+of segmentation, tone display, approximations, fanqie, sound laws).
 
 ## Architecture
 
