@@ -388,6 +388,9 @@ def _reading_row(ch, dialect, val, wikt=None):
         ap = ak.rom_approx_html(rom, ak.ROM_SCHEME.get(dialect))
         if ap:
             line += "&nbsp;&nbsp;" + ap
+        hint = ak.sandhi_hint_html(rom, ak.ROM_SCHEME.get(dialect))
+        if hint:
+            line += "&nbsp;&nbsp;" + hint
         md(f"**{dialect}:** {line}")
         return
     # No Wiktionary reading — fall back to the local database IPA (+ ≈ approx).
@@ -397,6 +400,9 @@ def _reading_row(ch, dialect, val, wikt=None):
         ap = ak.approx_html(dialect, val)
         if ap:
             line += "&nbsp;&nbsp;" + ap
+    hint = ak.sandhi_hint_html(val, ak.ROM_SCHEME.get(dialect))
+    if hint:
+        line += "&nbsp;&nbsp;" + hint
     md(f"**{dialect}:** {line}")
 
 
@@ -668,6 +674,10 @@ def render_single(ch: str):
     if not bucket:
         st.warning(f"No data for '{ch}'."); return
     hero_header(ch, bucket)
+    st.download_button(
+        "⬇️ Export report (markdown)",
+        data=ak.char_report_md(ch, bucket, PROV.get(ch), ak.char_meta().get(ch)),
+        file_name=f"{ch}_U{ord(ch):04X}_hanzihub.md", mime="text/markdown")
     wikt = c_wikt_readings(ch)
 
     glyph = c_glyph_origin(ch)

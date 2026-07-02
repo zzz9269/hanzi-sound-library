@@ -76,3 +76,25 @@ def test_approx_html_proto_min_keeps_category():
 
 def test_approx_html_non_phonetic_column_empty():
     assert ak.approx_html("Definition", "sky, heaven") == ""
+
+
+# ------------------------------------------------------- sandhi hints ------
+def test_sandhi_hint_poj_tone_circle():
+    out = ak.sandhi_hint_html("thiⁿ / thian", "poj")
+    assert "˥˥" in out and "˧˧" in out       # citation 55 → sandhi 33 (1→7)
+
+
+def test_sandhi_hint_teochew():
+    assert "˧˦" in ak.sandhi_hint_html("tiang1", "teochew")
+
+
+def test_sandhi_hint_inapplicable():
+    assert ak.sandhi_hint_html("tin1", None) == ""
+    assert ak.sandhi_hint_html("", "poj") == ""
+
+
+# ------------------------------------------------- MC division medials -----
+def test_mc_division_medials():
+    assert ak.mc_readable_syllable("見三東平") == "kyung"   # 三等 -j-
+    assert ak.mc_readable_syllable("心開四先平") == "sien"  # 四等 -i-
+    assert ak.mc_readable_syllable("心合一寒平") == "swan"  # 一等 unchanged
