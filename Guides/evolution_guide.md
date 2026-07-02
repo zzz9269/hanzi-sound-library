@@ -1,8 +1,11 @@
 # Sound evolution & chronology
 
 The **🌳 Sound evolution tree** (in each character's lookup) shows how *one*
-character's pronunciation descended from Old Chinese to today. This guide
-explains the family tree it's based on — and corrects a very common myth.
+character's pronunciation descended from Old Chinese to today. **Hover a
+branch node** to see the regular sound changes that produced that branch's form
+of this character (入聲 loss or retention, 全濁 devoicing, palatalisation, Min's
+pre-split archaisms, …) — derived from the character's Middle Chinese 音韻地位.
+This guide explains the family tree it's based on — and corrects a very common myth.
 
 ## ⚠️ The myth: "Old Chinese → Middle Chinese → Cantonese → Mandarin"
 

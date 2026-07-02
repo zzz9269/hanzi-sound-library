@@ -20,6 +20,9 @@ hangul-romanize>=0.1   # Hangul romanization
 pypinyin>=0.50         # local tone-marked pinyin for the Definition block
 romkan>=0.2            # romaji -> kana (kana_romaji_utils.py)
 
+# Development --------------------------------------------------------------
+pytest>=8.0            # `python -m pytest tests`
+
 # Optional Japanese reading fallbacks (used only if installed) ------------
 # fugashi[unidic-lite]  # MeCab tagger for kana when JapanDict misses
 # pykakasi              # kana -> romaji fallback
