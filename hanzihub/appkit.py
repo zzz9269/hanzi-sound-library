@@ -1436,6 +1436,126 @@ def teochew_colloquial_source(tw_han: str) -> str:
         lambda m: _TW_TO_TEOCHEW[m.group(0)], tw_han or "")
 
 
+# --- Teochew reading disambiguation via the Hokkien cognate -------------
+# Teochew has no annotation service to referee its literary/colloquial
+# doublets, but both sister languages' doublets descend from the same
+# Middle Chinese categories, so ithuan's tâi-lô for the SAME hanzi is a
+# usable referee here too: the cognate normally shares the traditional
+# tone class (陽上 6 merged into Taiwanese 7, so 7 matches either) and a
+# predictable initial correspondence (tâi-lô l→Peng'im l/n, k→g, g→gh,
+# ts→z, …). 樂 in 快樂 is tâi-lô lo̍k (l-, tone 8) → Peng'im lag8, not
+# the ghauh8 doublet. When no stored reading matches, mogher.com's
+# character entry supplies the missing doublet.
+_PENGIM_INITIALS = ("bh", "gh", "ng", "b", "p", "m", "d", "t", "n", "l",
+                    "g", "k", "h", "z", "c", "s", "r")
+
+_TAILO_TO_PENGIM_INITIAL = (
+    ("tsh", ("c",)), ("ts", ("z",)), ("ph", ("p",)), ("th", ("t",)),
+    ("kh", ("k",)), ("ng", ("ng",)), ("p", ("b",)), ("t", ("d",)),
+    ("k", ("g",)), ("b", ("bh",)), ("g", ("gh",)), ("j", ("r", "z")),
+    ("m", ("m",)), ("n", ("n", "l")), ("l", ("l", "n")), ("s", ("s",)),
+    ("h", ("h",)),
+)
+
+
+def _pengim_initial(base: str) -> str:
+    for i in _PENGIM_INITIALS:
+        if base.startswith(i):
+            return i
+    return ""
+
+
+def _pengim_initials_for_tailo(syl: str):
+    base = "".join(c for c in unicodedata.normalize("NFD", (syl or "").lower())
+                   if not unicodedata.combining(c))
+    for pre, outs in _TAILO_TO_PENGIM_INITIAL:
+        if base.startswith(pre):
+            return outs
+    return ("",)
+
+
+def _teochew_cognate_score(tok: str, kcls: str, initials) -> int:
+    """0–3: how well one Peng'im reading matches the tâi-lô cognate —
+    initial correspondence is worth 2 (it separates the doublets), the
+    traditional tone class 1. -1 when the token has no readable tone."""
+    info = _syllable_tone(tok, "teochew")
+    if not info:
+        return -1
+    base, cls, _ = info
+    tone_ok = cls == kcls or (kcls == "7" and cls in ("6", "7"))
+    init_ok = _pengim_initial(base) in initials if initials != ("",) \
+        else _pengim_initial(base) == ""
+    return 2 * init_ok + tone_ok
+
+
+MOGHER_CHAR_URL = "https://www.mogher.com/{}"
+_MOGHER_READING_RE = re.compile(r'href="/dic/czpy/([a-zê]+\d)"')
+
+
+def mogher_char_readings(ch: str) -> list[str]:
+    """Every Peng'im reading mogher's dictionary lists for one character
+    (the missing-doublet source for the cognate referee). Disk-cached."""
+    import requests
+    p = _tts_cache_path(ch, "readings", "mogher").with_suffix(".txt")
+    if p.exists():
+        t = p.read_text("utf-8").strip()
+        return t.split(",") if t else []
+    r = requests.get(MOGHER_CHAR_URL.format(ch), timeout=30)
+    outs = list(dict.fromkeys(_MOGHER_READING_RE.findall(r.text))) \
+        if r.ok else []
+    if r.ok:
+        p.write_text(",".join(outs), "utf-8")
+    return outs
+
+
+def teochew_tailo_matched_tokens(data, dialect, s, alt, kip):
+    """``per_char_tokens`` for the Teochew column, refereed by the tâi-lô
+    of the same hanzi (see above). A reading is only replaced by a
+    strictly better-scoring one, and mogher's extra candidates need at
+    least an initial match; first readings are returned untouched
+    whenever the alignment fails."""
+    pairs = per_char_tokens(data, dialect, s, alt)
+    if ROM_SCHEME.get(dialect) != "teochew":
+        return pairs
+    hanzi_pos = [i for i, (ch, _) in enumerate(pairs) if looks_like_hanzi(ch)]
+    units = _tailo_units(kip)
+    if not units or len(units) != len(hanzi_pos):
+        return pairs
+    if not (alt and len(alt) == len(s)):
+        alt = None
+    out = list(pairs)
+    for (syl, kcls), i in zip(units, hanzi_pos):
+        if not kcls:
+            continue
+        ch = s[i]
+        opts = split_opts(data.get(ch, {}).get(dialect, ""))
+        if not opts and alt and alt[i] != ch:
+            opts = split_opts(data.get(alt[i], {}).get(dialect, ""))
+        if not opts:
+            continue
+        initials = _pengim_initials_for_tailo(syl)
+        best, best_score = opts[0], _teochew_cognate_score(opts[0], kcls,
+                                                           initials)
+        for tok in opts[1:]:
+            sc = _teochew_cognate_score(tok, kcls, initials)
+            if sc > best_score:
+                best, best_score = tok, sc
+        if best_score < 2:          # nothing matches even the initial —
+            try:                    # ask mogher for the missing doublet
+                extra = mogher_char_readings(ch)
+                if not extra and alt and alt[i] != ch:
+                    extra = mogher_char_readings(alt[i])
+            except Exception:
+                extra = []
+            for tok in extra:
+                sc = _teochew_cognate_score(tok, kcls, initials)
+                if sc >= 2 and sc > best_score:
+                    best, best_score = tok, sc
+        if best != (out[i][1] or ""):
+            out[i] = (ch, best)
+    return out
+
+
 # --- Teochew phrase audio (mogher.com syllable recordings) --------------
 # No public Teochew TTS engine exists (checked 2026-07: Teochew-Wild has
 # published vocoders + ASR on HuggingFace but no acoustic model yet). The
@@ -1463,7 +1583,8 @@ def _mogher_variants(syl: str):
             out.append(v)
 
     for a, b in (("io", "ie"), ("ie", "io"), ("uang", "ueng"),
-                 ("uag", "ueg"), ("iau", "iou"), ("iou", "iau")):
+                 ("uag", "ueg"), ("iau", "iou"), ("iou", "iau"),
+                 ("au", "ao"), ("ao", "au")):
         add(syl.replace(a, b))
     for a, b in (("k", "g"), ("g", "k"), ("p", "b"), ("b", "p")):
         add(re.sub(rf"{a}(\d)$", rf"{b}\1", syl))

@@ -232,3 +232,38 @@ def test_mogher_variants_cover_coda_letter_swaps():
     # the swap only touches the coda, never the initial
     assert ak._mogher_variants("kim1") == ["kim1"]
     assert ak._mogher_variants("pim1") == ["pim1"]
+
+
+# ------------------- Teochew doublet referee (Hokkien cognate tâi-lô) --
+def test_teochew_cognate_score_separates_doublets():
+    inits = ak._pengim_initials_for_tailo("lo̍k")     # l- → Peng'im l/n
+    assert ak._teochew_cognate_score("lag8", "8", inits) == 3
+    assert ak._teochew_cognate_score("ghauh8", "8", inits) == 1
+    assert ak._pengim_initials_for_tailo("ê") == ("",)   # zero initial
+
+
+def test_teochew_cognate_referee_picks_matching_doublet():
+    data = {"快": {"Teochew": "kuai3"}, "樂": {"Teochew": "ghauh8 | lag8"}}
+    pairs = ak.teochew_tailo_matched_tokens(data, "Teochew", "快樂", None,
+                                            "khuài-lo̍k")
+    assert pairs == [("快", "kuai3"), ("樂", "lag8")]
+
+
+def test_teochew_cognate_referee_consults_mogher(monkeypatch):
+    monkeypatch.setattr(ak, "mogher_char_readings",
+                        lambda ch: ["lag8", "ghaoh8"])
+    data = {"快": {"Teochew": "kuai3"}, "樂": {"Teochew": "ghauh8"}}
+    pairs = ak.teochew_tailo_matched_tokens(data, "Teochew", "快樂", None,
+                                            "khuài-lo̍k")
+    assert pairs[1] == ("樂", "lag8")
+
+
+def test_teochew_cognate_referee_falls_back_on_misalignment(monkeypatch):
+    monkeypatch.setattr(ak, "mogher_char_readings",
+                        lambda ch: (_ for _ in ()).throw(AssertionError))
+    data = {"樂": {"Teochew": "ghauh8"}}
+    before = ak.per_char_tokens(data, "Teochew", "樂", None)
+    assert ak.teochew_tailo_matched_tokens(data, "Teochew", "樂", None,
+                                           "") == before
+    assert ak.teochew_tailo_matched_tokens(data, "Teochew", "樂", None,
+                                           "khuài-lo̍k") == before

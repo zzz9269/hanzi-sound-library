@@ -928,6 +928,17 @@ def render_multi(text: str):
                 hok_coll = c_hokkien_colloquial(trad)
             except Exception as e:
                 hok_coll = e
+        elif dl.startswith("teochew"):
+            # no Teochew annotation service exists, but the Hokkien tâi-lô
+            # of the same hanzi referees the literary/colloquial doublet
+            # choice (cognates share MC tone class + initial correspondence:
+            # 樂 in 快樂 = lo̍k → lag8, not ghauh8); mogher.com supplies
+            # doublets missing from our data
+            try:
+                toks = ak.teochew_tailo_matched_tokens(
+                    DATA, dialect, text, trad, c_hokkien_tailo(trad))
+            except Exception:
+                pass
         parts = []
         for ch, tok in toks:
             if tok:
@@ -1015,8 +1026,13 @@ def render_multi(text: str):
                 pass
             toks_t = toks
             if via:
-                toks_t = ak.per_char_tokens(DATA, dialect, teo_src,
-                                            ak.s2t_text(teo_src))
+                try:
+                    toks_t = ak.teochew_tailo_matched_tokens(
+                        DATA, dialect, teo_src, ak.s2t_text(teo_src),
+                        c_hokkien_tailo(teo_src))
+                except Exception:
+                    toks_t = ak.per_char_tokens(DATA, dialect, teo_src,
+                                                ak.s2t_text(teo_src))
                 md("<span style='color:#8a93a5;font-size:.82em'>"
                    "&nbsp;&nbsp;↳ colloquial:</span> "
                    f"<b>{_html.escape(teo_src)}</b> "
