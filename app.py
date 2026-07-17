@@ -109,6 +109,16 @@ def c_hokkien_tts(t):
     return ak.hokkien_tts_bytes(t)
 
 
+@st.cache_data(show_spinner="Annotating tâi-lô (ithuan.tw)…")
+def c_hokkien_tailo(t):
+    return ak.hokkien_tailo(t)
+
+
+@st.cache_data(show_spinner="Translating to colloquial Taiwanese (Lohankha)…")
+def c_hokkien_colloquial(t):
+    return ak.hokkien_colloquial(t)
+
+
 @st.cache_data(show_spinner="Fetching Chaozhou Teochew syllables (mogher.com)…")
 def c_teochew_phrase(toks, spoken):
     return ak.teochew_phrase_mp3(toks, spoken)
@@ -903,16 +913,21 @@ def render_multi(text: str):
         toks = ak.per_char_tokens(DATA, dialect, text, trad)
         if not any(tok for _, tok in toks):
             continue
-        hok_audio = None            # (mp3, kip) once fetched, else Exception
+        hok_coll = None             # (hanzi, tâi-lô) translation | Exception
         if dl.startswith("hokkien"):
-            # fetched up front so ithuan's tâi-lô can pick the in-context
-            # reading among each character's alternates (台 in 台灣 = tone 5)
+            # ithuan's tâi-lô picks the in-context reading among each
+            # character's alternates (台 in 台灣 = tone 5)
             try:
-                hok_audio = c_hokkien_tts(trad)
                 toks = ak.tailo_matched_tokens(DATA, dialect, text, trad,
-                                               hok_audio[1])
+                                               c_hokkien_tailo(trad))
+            except Exception:
+                pass                            # keep the first readings
+            # the written sentence is Mandarin vocabulary — fetch how it is
+            # actually SAID in Taiwanese (今天我很開心 → 今仔日我真爽快)
+            try:
+                hok_coll = c_hokkien_colloquial(trad)
             except Exception as e:
-                hok_audio = e
+                hok_coll = e
         parts = []
         for ch, tok in toks:
             if tok:
@@ -937,11 +952,42 @@ def render_multi(text: str):
         elif dl.startswith("cantonese"):
             audio(text, ak.VOICE_YUE, text)
         elif dl.startswith("hokkien"):
-            # 意傳's SuiSiann voice speaks natural Taiwanese, sandhi included —
-            # the audible counterpart of the "↳ spoken:" line above. Its own
-            # tâi-lô is shown so a reading mismatch with our row is visible.
-            if isinstance(hok_audio, tuple):
-                mp3, kip = hok_audio
+            # 意傳's SuiSiann voice speaks natural Taiwanese, sandhi
+            # included. When Lohankha's 華→台 translation differs from the
+            # written sentence, the COLLOQUIAL wording is what gets spoken —
+            # nobody says the Mandarin-vocabulary text aloud in Hokkien.
+            coll = hok_coll if isinstance(hok_coll, tuple) else None
+            hz = lambda s: "".join(c for c in s if ak.looks_like_hanzi(c))
+            differs = bool(coll) and hz(coll[0]) != hz(trad)
+            speak = coll[0] if differs else trad
+            mp3 = kip = None
+            try:
+                mp3, kip = c_hokkien_tts(speak)
+            except Exception as e:
+                st.caption("Taiwanese Hokkien audio unavailable (ithuan.tw): "
+                           f"{e}")
+            if differs:
+                inner = ("<span style='opacity:.85'>↳ colloquial: </span>"
+                         f"<b>{_html.escape(coll[0])}</b> "
+                         "<span style='opacity:.7;font-size:.92em'>"
+                         f"{_html.escape(kip or coll[1])}</span> "
+                         "<span style='opacity:.6;font-size:.85em' "
+                         "title='The written sentence uses Mandarin "
+                         "vocabulary; this is how it is actually SAID in "
+                         "Taiwanese Hokkien — words and grammar translated "
+                         "by Lohankha 華→台 MT (今天→今仔日, 很→真), then "
+                         "synthesized by ithuan.tw. Machine translation can "
+                         "err.'>(colloquial Taiwanese Hokkien — Lohankha MT)"
+                         "</span> " + (spk_bytes(mp3, ("nan", speak))
+                                       if mp3 else ""))
+                play_row(inner, 40)
+                toks_c = ak.tailo_matched_tokens(
+                    DATA, dialect, speak, ak.s2t_text(speak), kip or "")
+                coll_line = ak.phrase_sandhi_html(
+                    toks_c, dialect, label="&nbsp;&nbsp;↳ colloquial spoken:")
+                if coll_line:
+                    md(coll_line)
+            elif mp3:
                 play_row("<span style='opacity:.7;font-size:.92em'>"
                          f"{_html.escape(kip)} <span style='opacity:.6' "
                          "title='Hokkien varies by region (Amoy, Quanzhou/"
@@ -949,10 +995,10 @@ def render_multi(text: str):
                          "sandhi are specifically the TAIWANESE variety "
                          "(臺灣話, 意傳 SuiSiann).'>(Taiwanese Hokkien, "
                          "ithuan.tw)</span></span> "
-                         + spk_bytes(mp3, ("nan", trad)))
-            else:
-                st.caption("Taiwanese Hokkien audio unavailable (ithuan.tw): "
-                           f"{hok_audio}")
+                         + spk_bytes(mp3, ("nan", speak)))
+            if isinstance(hok_coll, Exception):
+                st.caption("Colloquial Taiwanese translation unavailable "
+                           f"(Lohankha): {hok_coll}")
         elif dl.startswith("teochew"):
             # No Teochew TTS engine exists anywhere (2026-07), so this is
             # stitched from mogher.com's per-syllable dictionary recordings:
@@ -975,8 +1021,12 @@ def render_multi(text: str):
                        "varies: Shantou, Chenghai, Jieyang…). The spoken "
                        "version plays each non-final syllable with the "
                        "citation-tone recording nearest its sandhi "
-                       "contour — an approximation.'>(Chaozhou Teochew, "
-                       "mogher.com, stitched)</span>")
+                       "contour — an approximation. Note: this reads the "
+                       "sentence AS WRITTEN, word by word — no "
+                       "Mandarin→Teochew translation service exists yet, "
+                       "so colloquial Teochew wording (今天→今日) is not "
+                       "applied.'>(Chaozhou Teochew, mogher.com, "
+                       "stitched)</span>")
                 if cit:
                     row += " citation " + spk_bytes(cit, ("teo-cit", text))
                 if spo and spo != cit:

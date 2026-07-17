@@ -1217,7 +1217,7 @@ def phrase_surface_tones(pairs, scheme: str):
     return out
 
 
-def phrase_sandhi_html(pairs, dialect: str) -> str:
+def phrase_sandhi_html(pairs, dialect: str, label: str = "↳ spoken:") -> str:
     """Sub-line for the multi-character view showing how the phrase is
     actually SPOKEN: every non-group-final syllable with its sandhi tone,
     group-final syllables with citation. ``""`` when the dialect has no
@@ -1252,7 +1252,7 @@ def phrase_sandhi_html(pairs, dialect: str) -> str:
             "last in its tone group takes its sandhi tone; punctuation or "
             "spaces in your input mark group boundaries. Neutral-tone words "
             "(輕聲, e.g. the 仔 suffix, pronoun objects) are not modelled.'>"
-            "&nbsp;&nbsp;↳ spoken:</span> <code>" + sep.join(rendered)
+            f"&nbsp;&nbsp;{label}</span> <code>" + sep.join(rendered)
             + "</code> <span style='color:#8a93a5;font-size:.82em'>"
             "(sandhi applied; last of each group = citation)</span>")
 
@@ -1328,6 +1328,84 @@ def tailo_matched_tokens(data, dialect, s, alt, kip):
         if best:
             out[i] = (ch, best)
     return out
+
+
+# --- Mandarin → colloquial Taiwanese translation (Lohankha) -------------
+# The sentences fed to this app are written with Mandarin vocabulary; Min
+# speakers do not SAY 今天/很 but 今仔日/真, so a faithful "spoken" line
+# needs real 華→台 translation first, not just character readings.
+# Lohankha (translate.lohankha.tw) offers free syntax-aware MT between
+# Mandarin and Taiwanese (hanzi / tâi-lô / POJ). Their server omits its
+# TLS intermediates (Let's Encrypt gen-y, whose root is newer than
+# certifi), so a CA bundle is built once by walking the certificate's own
+# AIA (CA-Issuers) pointers — the same mechanism browsers use. Every
+# fetched cert is signature-checked during verification, so trust stays
+# anchored at certifi's ISRG Root X1; nothing is blindly trusted.
+LOHANKHA_PAGE = "https://translate.lohankha.tw/en/"
+LOHANKHA_API = "https://translate.lohankha.tw/api/translate/"
+_AIA_URL_RE = re.compile(rb"http://[\x21-\x7e]+?\.i\.lencr\.org/")
+
+
+def _lohankha_ca(rebuild: bool = False) -> str:
+    """Path to a CA bundle (certifi + Lohankha's missing intermediates)."""
+    import ssl
+    import socket
+    import certifi
+    import requests
+    p = Path(CACHE_DIR) / "lohankha_ca.pem"
+    if rebuild or not p.exists():
+        host = "translate.lohankha.tw"
+        ctx = ssl._create_unverified_context()  # only to READ the AIA chain
+        with socket.create_connection((host, 443), 30) as sk:
+            with ctx.wrap_socket(sk, server_hostname=host) as tls:
+                der = tls.getpeercert(True)
+        pems, seen, queue = [], set(), [der]
+        while queue and len(seen) < 8:
+            d, queue = queue[0], queue[1:]
+            for u in set(_AIA_URL_RE.findall(d)) - seen:
+                seen.add(u)
+                r = requests.get(u.decode("ascii"), timeout=30)
+                if r.ok and r.content[:1] == b"\x30":   # a DER certificate
+                    pems.append(ssl.DER_cert_to_PEM_cert(r.content))
+                    queue.append(r.content)
+        p.write_text(Path(certifi.where()).read_text("utf-8")
+                     + "\n" + "\n".join(pems), "utf-8")
+    return str(p)
+
+
+def hokkien_colloquial(text: str) -> tuple[str, str]:
+    """``(hanzi, tâi-lô)`` — the sentence as actually SAID in Taiwanese
+    Hokkien (今天我很開心 → 今仔日我真爽快), via Lohankha's 華→台 machine
+    translation. Disk-cached; raises on network/MT failure."""
+    import requests
+    p = _tts_cache_path(text, "zh2nan", "lohankha").with_suffix(".txt")
+    if p.exists():
+        han, _, lmj = p.read_text("utf-8").partition("\t")
+        return han, lmj
+    s = requests.Session()
+    for attempt in (0, 1):      # retry once with a rebuilt bundle: the
+        try:                    # intermediates rotate every few months
+            ca = _lohankha_ca(rebuild=bool(attempt))
+            page = s.get(LOHANKHA_PAGE, timeout=30, verify=ca).text
+            break
+        except requests.exceptions.SSLError:
+            if attempt:
+                raise
+    m = re.search(r"'X-CSRFToken':\s*\"([^\"]+)\"", page)
+    if not m:
+        raise RuntimeError("Lohankha page had no CSRF token")
+    r = s.post(LOHANKHA_API, timeout=90, verify=ca,
+               data={"key": text, "input_lang": "zh-tw",
+                     "output_format": "tai-han", "lmj": "tailo", "ip": ""},
+               headers={"X-CSRFToken": m.group(1), "Referer": LOHANKHA_PAGE})
+    r.raise_for_status()
+    j = r.json()
+    han = ((j.get("result") or {}).get("output") or "").strip()
+    lmj = ((j.get("result") or {}).get("lmj") or "").strip()
+    if not (j.get("success") and han):
+        raise RuntimeError(f"Lohankha: {j.get('error') or 'empty result'}")
+    p.write_text(f"{han}\t{lmj}", "utf-8")
+    return han, lmj
 
 
 # --- Teochew phrase audio (mogher.com syllable recordings) --------------

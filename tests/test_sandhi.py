@@ -205,3 +205,9 @@ def test_mp3_frames_strips_id3v2_and_v1():
     v1 = b"TAG" + b"\x00" * 125
     assert ak._mp3_frames(v2 + body + v1) == body
     assert ak._mp3_frames(body) == body
+
+
+def test_phrase_sandhi_html_custom_label():
+    pairs = [("豬", "ti˥"), ("肉", "baʔ˧")]
+    html = ak.phrase_sandhi_html(pairs, "Hokkien", label="↳ colloquial spoken:")
+    assert "colloquial spoken:" in html and "↳ spoken:" not in html
