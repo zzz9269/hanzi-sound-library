@@ -57,6 +57,14 @@ def test_ipa_to_english_one_syllable_per_syllable():
     assert ak.ipa_to_english("kʰau") == "kow"
 
 
+def test_ipa_to_english_coda_labial_reordered():
+    # syllable-final /Cʷ/ is the rime's off-glide: read "ghawk" not "ghakw"
+    # (學 = haewk = ɣæwk). ONSET /kʷa/ keeps its real "kw-".
+    assert ak.ipa_to_english("ɣækʷ⁴") == "ghawk⁴"
+    assert ak.ipa_to_english("ɣækʷ") == "ghawk"
+    assert ak.ipa_to_english("kʷɑ") == "kwah"      # onset untouched
+
+
 # ----------------------------------------------------- Baxter–Sagart gloss --
 def test_baxter_sagart_markup_stripped():
     assert ak.baxter_sagart_approx("*[k]ʷʰˤret-s") == "khwret-s"

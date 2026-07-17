@@ -217,6 +217,48 @@ def audio_html(text: str, lang: str, voice: str, label: str | None = None) -> st
             f'<source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>')
 
 
+# --- Taiwanese Hokkien TTS (意傳科技 ithuan.tw) -------------------------
+# Google Cloud has no Min voice. 意傳's open services fill the gap: hokbu
+# annotates Hanzi with tâi-lô (KIP) and hapsing synthesizes it with their
+# SuiSiann voice. The model is trained on natural Taiwanese speech, so TONE
+# SANDHI IS APPLIED by the model itself — the audio matches the "↳ spoken:"
+# surface-tone line, not the citation readings. It is a free community
+# service: responses are disk-cached like Google TTS, one request per phrase.
+ITHUAN_ANNOTATE_URL = "https://hokbu.ithuan.tw/tau"
+ITHUAN_SYNTH_URL = "https://hapsing.ithuan.tw/bangtsam"
+
+
+def hokkien_tailo(text: str) -> str:
+    """Tâi-lô (KIP) romanisation of Hanzi ``text`` from 意傳's 標漢字音標
+    service. Characters it cannot read come back as ``?``."""
+    import requests
+    r = requests.post(ITHUAN_ANNOTATE_URL, data={"taibun": text}, timeout=30)
+    r.raise_for_status()
+    return ((r.json().get("kiatko") or [{}])[0].get("KIP") or "").strip()
+
+
+def hokkien_tts_bytes(text: str) -> tuple[bytes, str]:
+    """``(mp3, tâi-lô)`` for Hanzi ``text`` spoken in Taiwanese Hokkien with
+    natural tone sandhi. Raises on network failure or unreadable input."""
+    p = _tts_cache_path(text, "nan-TW", "ithuan-suisiann")
+    kp = p.with_suffix(".kip.txt")
+    if p.exists() and kp.exists():
+        return p.read_bytes(), kp.read_text("utf-8")
+    kip = hokkien_tailo(text)
+    if not re.search(r"[A-Za-zÀ-ȳ]", kip):
+        raise RuntimeError(f"no tâi-lô reading for {text!r}")
+    import requests
+    r = requests.get(ITHUAN_SYNTH_URL, params={"taibun": kip}, timeout=60)
+    r.raise_for_status()
+    mp3 = r.content
+    # a real answer is MP3 (ID3 tag or raw frame sync), not an error page
+    if len(mp3) < 512 or not (mp3.startswith(b"ID3") or mp3[:1] == b"\xff"):
+        raise RuntimeError("ithuan.tw synthesis returned no audio")
+    p.write_bytes(mp3)
+    kp.write_text(kip, "utf-8")
+    return mp3, kip
+
+
 # =====================================================================
 # Japanese / Korean local helpers
 # =====================================================================
@@ -510,12 +552,65 @@ def load_provenance(root=None) -> dict:
     return prov
 
 
-def concat_per_char(data, dialect, s):
-    out = []
-    for ch in s:
+@lru_cache(maxsize=1)
+def _s2t_converter():
+    try:
+        import opencc
+        return opencc.OpenCC("s2t")
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=4096)
+def s2t_text(text: str) -> str:
+    """Phrase-aware simplified→traditional conversion (OpenCC), used to fall
+    back to the traditional form's readings — the dataset is keyed by
+    traditional characters, so simplified input otherwise finds starved rows.
+    Returns ``text`` unchanged if OpenCC is unavailable or the conversion is
+    not 1:1 per character (callers need positional alignment)."""
+    conv = _s2t_converter()
+    if not text or conv is None:
+        return text
+    try:
+        out = conv.convert(text)
+    except Exception:
+        return text
+    return out if len(out) == len(text) else text
+
+
+def per_char_tokens(data, dialect, s, alt=None):
+    """``[(char, reading-or-None), …]`` for each char of ``s``. An empty cell
+    falls back to the same position in ``alt`` (the s2t_text conversion of
+    ``s``) before giving up."""
+    if not (alt and len(alt) == len(s)):
+        alt = None
+    pairs = []
+    for i, ch in enumerate(s):
         tok = split_opts(data.get(ch, {}).get(dialect, ""))
-        out.append(tok[0] if tok else ch)
-    return " ".join(x for x in out if x)
+        if not tok and alt and alt[i] != ch:
+            tok = split_opts(data.get(alt[i], {}).get(dialect, ""))
+        pairs.append((ch, tok[0] if tok else None))
+    return pairs
+
+
+def concat_per_char(data, dialect, s, alt=None):
+    return " ".join((tok or ch) for ch, tok in per_char_tokens(data, dialect, s, alt) if tok or ch)
+
+
+def with_trad_fallback(data, ch):
+    """``(bucket, trad)`` — the char's bucket with empty columns backfilled
+    from its traditional form; ``trad`` is that form when any backfill
+    happened, else None."""
+    bucket = dict(data.get(ch, {}))
+    trad = s2t_text(ch)
+    if trad == ch or trad not in data:
+        return bucket, None
+    used = False
+    for col, v in data[trad].items():
+        if v and not bucket.get(col):
+            bucket[col] = v
+            used = True
+    return bucket, (trad if used else None)
 
 
 def per_char_pairs_from_csv(data, text, dialect):
@@ -607,6 +702,11 @@ _IPA_ENG = {
     "ᵐ": "m", "ᵑ": "ng", "ᵐb": "mb", "ⁱ": "y", "ᵘ": "w", "ˡ": "l",
     "ʳ": "r", "ʸ": "y", "ᵏ": "k", "ᵗ": "t", "ᵖ": "p", "ᵇ": "b", "ᵈ": "d",
     "ʰ": "h", "ː": "", "ˤ": "", "ʲ": "y", "ʷ": "w", "ⁿ": "n",
+    # labialized CODA (syllable-final) — the off-glide is reordered BEFORE the
+    # stop by _CODA_LABIAL so it reads "ghawk" not "ghakw" (you can't voice a "w"
+    # after a final "k"). The stop stays a plain final -k/-p/-t here (clearer to a
+    # layman than the lenited g/b/d bare-coda gives).
+    "ʷk": "wk", "ʷp": "wp", "ʷt": "wt", "ʷŋ": "wng",
     "̃": "ⁿ", "̩": "",
     # Chao tone letters pass through unchanged — the unified tone display
     # keeps the same contour glyphs in the ≈ gloss as in the reading itself
@@ -677,6 +777,14 @@ IPA_APPROX_COLS = {
 }
 
 
+# A labialized CODA consonant (syllable-final /Cʷ/) reads more naturally with the
+# off-glide BEFORE the stop — "ghawk", not "ghakw" (a layman can't voice a "w"
+# after a final "k"). Reorder /Cʷ/ → /ʷC/ only when the ʷ is syllable-final: at
+# end of string, before whitespace, or before a tone marker/digit. ONSET /kʷa/
+# (ʷ before a vowel) is left untouched so it still reads "kwah".
+_CODA_LABIAL = re.compile(r"([kɡgptbdŋmnʔ])ʷ(?=$|\s|[˥˦˧˨˩⁰¹²³⁴⁵⁶⁷⁸⁹0-9])")
+
+
 def ipa_to_english(reading: str) -> str:
     r = unicodedata.normalize("NFD", (reading or "").replace("[ML]", "").strip())
     # drop affricate tie bars so t͡s / t͡ɕ / ʈ͡ʂ match the ts / tɕ / ʈʂ keys
@@ -690,6 +798,8 @@ def ipa_to_english(reading: str) -> str:
     r = "".join(c for c in r if c == "̃" or not unicodedata.combining(c))
     # collapse each vowel run to one nucleus + glides → one English syllable
     r = _fold_vowel_runs(r)
+    # syllable-final /Cʷ/ → /ʷC/ so the off-glide reads before the coda stop
+    r = _CODA_LABIAL.sub(lambda m: "ʷ" + m.group(1), r)
     out, i, L = [], 0, len(r)
     while i < L:
         if r[i] == " ":
@@ -994,6 +1104,230 @@ def _diacritic_tone(syllable: str, scheme: str) -> str:
     if scheme == "pfs":
         return "6" if checked else "4"
     return ""
+
+
+# =====================================================================
+# Phrase-level tone sandhi (multi-character input)
+# =====================================================================
+# Min sandhi is positional, not lexical: within a tone group (roughly a
+# syntactic phrase) EVERY syllable except the last takes its sandhi tone and
+# only the group-final syllable keeps citation. So given per-character
+# citation readings, the surface tones of a phrase are deterministic once the
+# group boundaries are known. We split groups at non-Hanzi input characters
+# (punctuation / spaces), i.e. the user marks boundaries by typing them; an
+# unpunctuated run is treated as one group. Known unmodelled cases: neutral
+# tone (輕聲 — pronoun objects, the 仔 suffix, verbal complements), where the
+# PRECEDING syllable keeps citation, and Teochew double sandhi.
+
+# Hokkien local readings are IPA whose tone is already a Chao contour, so the
+# citation CLASS is recovered from contour + coda. Inventory verified against
+# the whole dataset (2026-07): open ˥=1, ˥˩=2, ˧˩=3, ˨˦=5, ˧(33)/˨(22)=7
+# (both sources' 陽去 values); checked syllables (-p/-t/-k/-ʔ) split high=8 /
+# low=4. Tone 6 (陽上) merged into 7 in Amoy/Taiwanese, so it never occurs.
+_HOKKIEN_OPEN_CONTOUR_CLASS = {
+    "˥": "1", "˥˥": "1", "˥˩": "2", "˥˧": "2", "˧˩": "3", "˨˩": "3",
+    "˩": "3", "˨˦": "5", "˩˧": "5", "˧˥": "5", "˧": "7", "˧˧": "7",
+    "˨": "7", "˨˨": "7",
+}
+
+# POJ checked-tone sandhi depends on the coda: -p/-t/-k swap 4↔8 (the values
+# already in _SANDHI_CONTOUR), but glottal-final syllables (-h in POJ, -ʔ in
+# IPA) lose the stop and join the open circle: 4→2, 8→3 (Taipei values).
+_POJ_GLOTTAL_SANDHI = {"4": "51", "8": "21"}
+
+
+def _hokkien_ipa_class(base: str, contour: str) -> str:
+    """Citation tone class of a Hokkien IPA syllable, from its Chao contour
+    and coda. '' when the contour is outside the known inventory."""
+    if base.rstrip().endswith(("p", "t", "k", "ʔ")):
+        return "8" if ("˥" in contour or "˦" in contour) else "4"
+    return _HOKKIEN_OPEN_CONTOUR_CLASS.get(contour, "")
+
+
+def _syllable_tone(tok: str, scheme: str):
+    """``(base, tone_class, citation_contour)`` for one reading token, or
+    ``None`` when no tone can be recovered. Handles the three token shapes:
+    IPA + trailing Chao letters (Hokkien local), trailing class digit
+    (Peng'im), and tone-diacritic romanisation (POJ, from live Wiktionary)."""
+    s = (tok or "").strip().removesuffix("[ML]").strip()
+    if not s:
+        return None
+    m = _CHAO_RUN_RE.search(s)
+    if m and m.end() == len(s):
+        base = s[:m.start()]
+        cls = _hokkien_ipa_class(base, m.group(0)) if scheme == "poj" else ""
+        return (base, cls, m.group(0)) if cls else None
+    m = re.search(r"(\d+)$", s)
+    if m:
+        cit = _TONE_CONTOUR.get(scheme, {}).get(m.group(1), "")
+        return (s[:m.start()], m.group(1), contour_to_chao(cit)) if cit else None
+    cls = _diacritic_tone(s, scheme)
+    if cls:
+        cit = _TONE_CONTOUR.get(scheme, {}).get(cls, "")
+        if cit:
+            return (s, cls, contour_to_chao(cit))
+    return None
+
+
+def _sandhi_contour_of(cls: str, base: str, scheme: str) -> str:
+    """Non-final (sandhi) contour for a citation class, coda-sensitive for
+    POJ checked tones. '' when the class has no sandhi entry."""
+    if scheme == "poj" and cls in _POJ_GLOTTAL_SANDHI and \
+            base.rstrip().endswith(("h", "ʔ")):
+        return _POJ_GLOTTAL_SANDHI[cls]
+    return _SANDHI_CONTOUR.get(scheme, {}).get(cls, "")
+
+
+def phrase_surface_tones(pairs, scheme: str):
+    """Surface (spoken) tones for a phrase: ``[[syllable, …], …]`` — one list
+    per tone group, each syllable a dict with ``char``, ``base``, ``surface``
+    (Chao letters, '' if unknown), ``citation``, ``final`` and ``changed``.
+    ``pairs`` is ``per_char_tokens`` output; groups split at non-Hanzi chars.
+    Returns ``[]`` unless some group has ≥2 syllables (no sandhi otherwise)."""
+    groups, cur = [], []
+    for ch, tok in pairs:
+        if not looks_like_hanzi(ch):
+            if cur:
+                groups.append(cur)
+                cur = []
+            continue
+        cur.append((ch, tok))
+    if cur:
+        groups.append(cur)
+    if not any(len(g) > 1 for g in groups):
+        return []
+    out = []
+    for g in groups:
+        syls = []
+        for i, (ch, tok) in enumerate(g):
+            final = i == len(g) - 1
+            info = _syllable_tone(tok, scheme) if tok else None
+            if not info:
+                syls.append({"char": ch, "base": "", "surface": "",
+                             "citation": "", "final": final, "changed": False})
+                continue
+            base, cls, cit = info
+            sand = "" if final else contour_to_chao(
+                _sandhi_contour_of(cls, base, scheme))
+            surface = sand or cit
+            syls.append({"char": ch, "base": base, "surface": surface,
+                         "citation": cit, "final": final,
+                         "changed": bool(sand) and sand != cit})
+        out.append(syls)
+    return out
+
+
+def phrase_sandhi_html(pairs, dialect: str) -> str:
+    """Sub-line for the multi-character view showing how the phrase is
+    actually SPOKEN: every non-group-final syllable with its sandhi tone,
+    group-final syllables with citation. ``""`` when the dialect has no
+    sandhi table or the input has no multi-syllable group."""
+    scheme = ROM_SCHEME.get(dialect) or ""
+    if scheme not in _SANDHI_CONTOUR:
+        return ""
+    groups = phrase_surface_tones(pairs, scheme)
+    if not groups:
+        return ""
+    rendered = []
+    for g in groups:
+        chips = []
+        for s in g:
+            if not s["surface"]:
+                chips.append(f"<span style='color:#4a5160' title='no reading / "
+                             f"tone unknown'>{_html.escape(s['char'])}</span>")
+            elif s["final"]:
+                chips.append(f"<span title='group-final: keeps citation tone'>"
+                             f"{chao_html(s['base'] + s['surface'])}</span>")
+            else:
+                tip = (f"non-final: citation {s['citation']} is spoken "
+                       f"{s['surface']}" if s["changed"] else
+                       "non-final (sandhi tone equals citation here)")
+                col = "#d8b46e" if s["changed"] else "#cfcfcf"
+                chips.append(f"<span style='color:{col}' title='{tip}'>"
+                             f"{chao_html(s['base'] + s['surface'])}</span>")
+        rendered.append(" ".join(chips))
+    sep = " <span style='color:#4a5160'>‖</span> "
+    return ("<span style='color:#8a93a5;font-size:.82em' title='Min tone "
+            "sandhi applied across the phrase: every syllable that is not "
+            "last in its tone group takes its sandhi tone; punctuation or "
+            "spaces in your input mark group boundaries. Neutral-tone words "
+            "(輕聲, e.g. the 仔 suffix, pronoun objects) are not modelled.'>"
+            "&nbsp;&nbsp;↳ spoken:</span> <code>" + sep.join(rendered)
+            + "</code> <span style='color:#8a93a5;font-size:.82em'>"
+            "(sandhi applied; last of each group = citation)</span>")
+
+
+# --- reading disambiguation via ithuan's tâi-lô ------------------------
+# The dataset records several readings per character (literary/colloquial
+# variants) and per_char_tokens shows the first, but ithuan's annotator picks
+# the reading that fits the phrase (台 in 台灣 is tone 5, not the standalone
+# tone 1). Aligning its tâi-lô back onto the input lets the Hokkien row and
+# the "↳ spoken:" line use the reading the TTS voice actually speaks.
+
+# One spoken unit of a KIP string, in reading order: a tâi-lô syllable (Latin
+# letters + combining tone marks) or a Hanzi ithuan echoed unread (glued to
+# its neighbours without a hyphen). ithuan normalises punctuation to ASCII
+# and glues it on too, so anything else is simply skipped.
+_TAILO_UNIT_RE = re.compile(
+    r"[A-Za-zÀ-ɏ̀-ͯ]+|" + _HANZI_RE.pattern)
+
+
+def _tailo_units(kip: str):
+    """``[(unit, tone_class), …]`` per spoken unit of a KIP string; echoed
+    Hanzi (and syllables whose tone cannot be read) get class ``''``."""
+    out = []
+    for m in _TAILO_UNIT_RE.finditer(kip or ""):
+        u = m.group(0)
+        cls = "" if looks_like_hanzi(u) else _diacritic_tone(u, "poj")
+        out.append((u, cls))
+    return out
+
+
+def _tailo_nasal(syl: str) -> bool:
+    base = "".join(c for c in unicodedata.normalize("NFD", syl)
+                   if not unicodedata.combining(c)).lower()
+    return bool(re.search(r"nnh?$", base))
+
+
+def tailo_matched_tokens(data, dialect, s, alt, kip):
+    """``per_char_tokens`` with ithuan's tâi-lô as referee: among a character's
+    alternate readings, prefer one whose citation tone class (and then
+    nasality) matches the tâi-lô syllable spoken at that position. Alignment
+    is positional — one tâi-lô unit per Hanzi char — and the plain
+    first-reading pairs are returned whenever it fails."""
+    pairs = per_char_tokens(data, dialect, s, alt)
+    if ROM_SCHEME.get(dialect) != "poj":
+        return pairs
+    hanzi_pos = [i for i, (ch, _) in enumerate(pairs) if looks_like_hanzi(ch)]
+    units = _tailo_units(kip)
+    if not units or len(units) != len(hanzi_pos):
+        return pairs
+    if not (alt and len(alt) == len(s)):
+        alt = None
+    out = list(pairs)
+    for (syl, kcls), i in zip(units, hanzi_pos):
+        if not kcls:
+            continue
+        ch = s[i]
+        opts = split_opts(data.get(ch, {}).get(dialect, ""))
+        if not opts and alt and alt[i] != ch:
+            opts = split_opts(data.get(alt[i], {}).get(dialect, ""))
+        if len(opts) < 2:
+            continue
+        knasal = _tailo_nasal(syl)
+        best = None
+        for tok in opts:
+            info = _syllable_tone(tok, "poj")
+            if not info or info[1] != kcls:
+                continue
+            if best is None:
+                best = tok
+            if ("̃" in unicodedata.normalize("NFD", tok)) == knasal:
+                best = tok
+                break
+        if best:
+            out[i] = (ch, best)
+    return out
 
 
 def romanization_to_english(reading: str, scheme: str | None = None) -> str:

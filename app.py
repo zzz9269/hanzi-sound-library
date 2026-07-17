@@ -104,18 +104,28 @@ def c_ja_kana(t):
     return sc.ja_romaji_and_kana(t, to_shinjitai=ak.to_shinjitai_per_char)
 
 
-def spk(text, voice):
-    """A clickable 🔊 (with a hidden, preloaded <audio>) that plays one TTS
-    utterance — compact replacement for the full-width st.audio bar."""
-    try:
-        b64 = base64.b64encode(ak.tts_bytes(text, *voice)).decode("utf-8")
-    except Exception:
-        return "<span title='audio unavailable' style='opacity:.35'>🔇</span>"
-    aid = "a" + str(abs(hash((text, voice))) % 10**9)
+@st.cache_data(show_spinner="Synthesizing Taiwanese Hokkien (ithuan.tw)…")
+def c_hokkien_tts(t):
+    return ak.hokkien_tts_bytes(t)
+
+
+def spk_bytes(mp3: bytes, key) -> str:
+    """A clickable 🔊 (with a hidden, preloaded <audio>) that plays one mp3 —
+    compact replacement for the full-width st.audio bar."""
+    b64 = base64.b64encode(mp3).decode("utf-8")
+    aid = "a" + str(abs(hash(key)) % 10**9)
     return (f"<audio id='{aid}' preload='none'>"
             f"<source src='data:audio/mp3;base64,{b64}' type='audio/mp3'></audio>"
             f"<a href='#' onclick=\"document.getElementById('{aid}').play();return false;\" "
             f"title='Play' style='font-size:1.15em;text-decoration:none'>🔊</a>")
+
+
+def spk(text, voice):
+    """🔊 for one Google-TTS utterance (see ``spk_bytes``)."""
+    try:
+        return spk_bytes(ak.tts_bytes(text, *voice), (text, voice))
+    except Exception:
+        return "<span title='audio unavailable' style='opacity:.35'>🔇</span>"
 
 
 def play_row(inner_html, height=34):
@@ -142,6 +152,15 @@ _HIST = {"Middle Chinese", "Middle Chinese (Baxter)", "Middle Chinese (position)
          "Old Chinese (Zhengzhang)", "Proto-Min"}
 _SINO = {"Vietnamese", "Zhuang", "Japanese", "Japanese On", "Japanese Kun",
          "Okinawan", "Korean (Hangul)", "Korean (romanized)", "Korean (Yale)"}
+
+# Historical columns that are collapsed onto a single row: primary → (secondary,
+# primary-label, secondary-label). Middle Chinese is ONE reading in two notations
+# (Baxter transcription + its wikihan IPA), so no school labels. Old Chinese is
+# two RIVAL reconstructions (Baxter–Sagart vs. Zhengzhang), so each is labelled.
+_HIST_PAIRS = {
+    "Middle Chinese": ("Middle Chinese (Baxter)", None, None),
+    "Old Chinese": ("Old Chinese (Zhengzhang)", "Baxter–Sagart", "Zhengzhang"),
+}
 
 
 def _section_of(col):
@@ -406,10 +425,47 @@ def _reading_row(ch, dialect, val, wikt=None):
     md(f"**{dialect}:** {line}")
 
 
+def _hist_inline(col, val):
+    """Inner HTML for one historical reading — the reading plus its ≈ gloss, with
+    no ``Label:`` prefix (so two can share a line). The ≈ is shown only for IPA
+    readings, matching the standalone-row behaviour: ``approx_html`` yields the
+    Baxter–Sagart gloss for Old Chinese and an IPA sounds-like otherwise, and ""
+    for the Baxter ASCII transcription (which is not IPA)."""
+    line = ak.render_readings_html(val, col)
+    if _has_ipa(val):
+        ap = ak.approx_html(col, val)
+        if ap:
+            line += "&nbsp;&nbsp;" + ap
+    return line
+
+
+def _merged_hist_row(ch, primary, secondary, plabel, slabel, bucket):
+    """Render a collapsed historical pair (two notations / rival reconstructions)
+    on one ``Primary:`` line, joined by ``·``, each optionally school-labelled."""
+    segs = []
+    for col, label in ((primary, plabel), (secondary, slabel)):
+        v = bucket.get(col, "")
+        if not v:
+            continue
+        seg = _hist_inline(col, v)
+        if label:
+            seg += (f" <span style='color:#8a93a5;font-size:.82em'>({_html.escape(label)})</span>")
+        segs.append(seg)
+    if not segs:
+        return
+    sep = " <span style='color:#4a5160'>·</span> "
+    md(f"**{primary}:** " + sep.join(segs))
+
+
 def render_section(title, cols, bucket, ch, collapsed=False, wikt=None):
     """Render a reading section in two columns (optionally inside an expander)."""
     w = wikt or {}
-    rows = [c for c in cols if (c in bucket and bucket[c]) or w.get(c)]
+    present = {c for c in cols if (c in bucket and bucket[c]) or w.get(c)}
+    # collapse merged historical pairs: drop a secondary when its primary is also
+    # present (the primary's row draws both); keep it standalone otherwise.
+    _sec_of = {v[0]: p for p, v in _HIST_PAIRS.items()}
+    rows = [c for c in cols if c in present
+            and not (c in _sec_of and _sec_of[c] in present)]
     if not rows:
         return
 
@@ -419,7 +475,11 @@ def render_section(title, cols, bucket, ch, collapsed=False, wikt=None):
         for group, container in ((rows[:half], left), (rows[half:], right)):
             with container:
                 for col in group:
-                    _reading_row(ch, col, bucket.get(col, ""), wikt)
+                    if col in _HIST_PAIRS and _HIST_PAIRS[col][0] in present:
+                        sec, pl, sl = _HIST_PAIRS[col]
+                        _merged_hist_row(ch, col, sec, pl, sl, bucket)
+                    else:
+                        _reading_row(ch, col, bucket.get(col, ""), wikt)
 
     if collapsed:
         with st.expander(title):
@@ -670,10 +730,13 @@ def evolution_dot(ch, bucket, wikt=None):
 
 
 def render_single(ch: str):
-    bucket = DATA.get(ch, {})
+    bucket, trad_src = ak.with_trad_fallback(DATA, ch)
     if not bucket:
         st.warning(f"No data for '{ch}'."); return
     hero_header(ch, bucket)
+    if trad_src:
+        st.caption(f"{ch} is a simplified form — columns it lacks are shown from "
+                   f"traditional **{trad_src}**.")
     st.download_button(
         "⬇️ Export report (markdown)",
         data=ak.char_report_md(ch, bucket, PROV.get(ch), ak.char_meta().get(ch)),
@@ -821,24 +884,70 @@ def render_multi(text: str):
         scraper_html(sc.render_nom_html(df, tts=ak.tts_bytes, voice_vi=ak.VOICE_VI), 360)
 
     st.markdown("**Other topolects**")
+    trad = ak.s2t_text(text)
+    if trad != text:
+        conv = " ".join(f"{s}→{t}" for s, t in zip(text, trad) if s != t)
+        st.caption(f"Simplified input — missing readings are filled from the "
+                   f"traditional forms: {conv}")
     for dialect in ak.sorted_cols(DIALECT_COLS):
         dl = ak._norm(dialect)
         if dialect.startswith("dial:") or dl in ("definition", "fanqie", "fanqie_upper", "fanqie_lower"):
             continue
         if "japanese" in dl or dl.startswith("korean") or "vietnam" in dl:
             continue
-        line = ak.inline_tokens(ak.concat_per_char(DATA, dialect, text))
-        if not line:
+        toks = ak.per_char_tokens(DATA, dialect, text, trad)
+        if not any(tok for _, tok in toks):
             continue
-        block = f"**{dialect}:** `{ak.tones_to_chao(line, dialect)}`"
-        ap = ak.approx_html(dialect, ak.concat_per_char(DATA, dialect, text))
+        hok_audio = None            # (mp3, kip) once fetched, else Exception
+        if dl.startswith("hokkien"):
+            # fetched up front so ithuan's tâi-lô can pick the in-context
+            # reading among each character's alternates (台 in 台灣 = tone 5)
+            try:
+                hok_audio = c_hokkien_tts(trad)
+                toks = ak.tailo_matched_tokens(DATA, dialect, text, trad,
+                                               hok_audio[1])
+            except Exception as e:
+                hok_audio = e
+        parts = []
+        for ch, tok in toks:
+            if tok:
+                t = _html.escape(ak.tones_to_chao(tok.removesuffix("[ML]"), dialect))
+                if tok.endswith("[ML]"):
+                    t = (f"<span style='color:#d8c79b;font-style:italic' "
+                         f"title='{ak.ML_TOOLTIP}'>{t}</span>")
+                parts.append(t)
+            else:
+                parts.append(f"<span style='color:#4a5160' title='no {_html.escape(dialect)} "
+                             f"reading recorded for {ch}'>{ch}</span>")
+        block = f"**{dialect}:** <code>{' '.join(parts)}</code>"
+        ap = ak.approx_html(dialect, " ".join(tok for _, tok in toks if tok))
         if ap:
             block += "  " + ap
         md(block)
+        sandhi_line = ak.phrase_sandhi_html(toks, dialect)
+        if sandhi_line:
+            md(sandhi_line)
         if dl.startswith("mandarin"):
             audio(text, ak.VOICE_ZH, text)
         elif dl.startswith("cantonese"):
             audio(text, ak.VOICE_YUE, text)
+        elif dl.startswith("hokkien"):
+            # 意傳's SuiSiann voice speaks natural Taiwanese, sandhi included —
+            # the audible counterpart of the "↳ spoken:" line above. Its own
+            # tâi-lô is shown so a reading mismatch with our row is visible.
+            if isinstance(hok_audio, tuple):
+                mp3, kip = hok_audio
+                play_row("<span style='opacity:.7;font-size:.92em'>"
+                         f"{_html.escape(kip)} <span style='opacity:.6' "
+                         "title='Hokkien varies by region (Amoy, Quanzhou/"
+                         "Zhangzhou, Penang, Singapore…); this voice and its "
+                         "sandhi are specifically the TAIWANESE variety "
+                         "(臺灣話, 意傳 SuiSiann).'>(Taiwanese Hokkien, "
+                         "ithuan.tw)</span></span> "
+                         + spk_bytes(mp3, ("nan", trad)))
+            else:
+                st.caption("Taiwanese Hokkien audio unavailable (ithuan.tw): "
+                           f"{hok_audio}")
 
 
 # =====================================================================
@@ -886,7 +995,7 @@ def render_reverse(en: str):
                 continue
             if "japanese" in dl or dl.startswith("korean") or "vietnam" in dl:
                 continue
-            line = ak.inline_tokens(ak.concat_per_char(DATA, dialect, zh))
+            line = ak.inline_tokens(ak.concat_per_char(DATA, dialect, zh, ak.s2t_text(zh)))
             if line:
                 md(f"**{dialect}:** `{ak.tones_to_chao(line, dialect)}`")
 
@@ -918,7 +1027,7 @@ def render_legend(s: str):
     if len(s) == 1 and s in DATA:
         readings = [v for v in DATA[s].values() if v]
     else:
-        readings = [ak.concat_per_char(DATA, d, s) for d in DIALECT_COLS]
+        readings = [ak.concat_per_char(DATA, d, s, ak.s2t_text(s)) for d in DIALECT_COLS]
     lines = ak.ipa_legend_lines(readings, SYMBOLS)
     if not lines:
         st.info("No IPA symbols found (or IPA file missing)."); return
