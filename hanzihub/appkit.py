@@ -372,6 +372,12 @@ def looks_like_hanzi(s: str) -> bool:
     return bool(_HANZI_RE.search(s or ""))
 
 
+def hanzi_only(s: str) -> str:
+    """Just the Hanzi of ``s`` — for wording comparisons that should ignore
+    punctuation/whitespace differences (MT normalizes punctuation)."""
+    return "".join(_HANZI_RE.findall(s or ""))
+
+
 # =====================================================================
 # Text helpers
 # =====================================================================
@@ -1408,6 +1414,28 @@ def hokkien_colloquial(text: str) -> tuple[str, str]:
     return han, lmj
 
 
+# --- Teochew colloquial source (via the Hokkien translation) ------------
+# No Mandarin→Teochew MT exists, but Teochew and Hokkien are sister
+# Southern Min languages sharing most core vocabulary (食/行/厝/伊/毋/
+# 歡喜…), so Lohankha's TAIWANESE wording is a far closer source text for
+# the Teochew rendition than the Mandarin original. A small table swaps
+# the best-attested Taiwan-specific items for their Teochew equivalents;
+# the rest is read as-is and labelled "via Hokkien" in the UI.
+_TW_TO_TEOCHEW = {
+    "今仔日": "今日", "明仔載": "明日", "昨昏": "昨日",
+    "佗位": "底塊", "啥物": "乜個", "佇": "在", "矣": "了",
+}
+_TW_TO_TEOCHEW_RE = re.compile(
+    "|".join(sorted(_TW_TO_TEOCHEW, key=len, reverse=True)))
+
+
+def teochew_colloquial_source(tw_han: str) -> str:
+    """Teochew-friendly hanzi derived from a TAIWANESE sentence: shared
+    Southern Min vocabulary is kept, listed Taiwan-specific words swapped."""
+    return _TW_TO_TEOCHEW_RE.sub(
+        lambda m: _TW_TO_TEOCHEW[m.group(0)], tw_han or "")
+
+
 # --- Teochew phrase audio (mogher.com syllable recordings) --------------
 # No public Teochew TTS engine exists (checked 2026-07: Teochew-Wild has
 # published vocoders + ASR on HuggingFace but no acoustic model yet). The
@@ -1425,13 +1453,20 @@ _MOGHER_MP3_RE = re.compile(r"sound/syllabes/([^\"'<>]+?\.mp3)")
 
 def _mogher_variants(syl: str):
     """Spellings to try on mogher: as-is, then the Shantou⇄Chaozhou vowel
-    alternations (our sources mix both; mogher is Chaozhou-standard)."""
+    alternations (our sources mix both; mogher is Chaozhou-standard), then
+    the checked-coda letter swaps — official Peng'im writes -b/-g where
+    some of our sources write -p/-k (rik8 vs mogher's rig8)."""
     out = [syl]
-    for a, b in (("io", "ie"), ("ie", "io"), ("uang", "ueng"),
-                 ("uag", "ueg")):
-        v = syl.replace(a, b)
-        if v not in out:
+
+    def add(v):
+        if v and v not in out:
             out.append(v)
+
+    for a, b in (("io", "ie"), ("ie", "io"), ("uang", "ueng"),
+                 ("uag", "ueg"), ("iau", "iou"), ("iou", "iau")):
+        add(syl.replace(a, b))
+    for a, b in (("k", "g"), ("g", "k"), ("p", "b"), ("b", "p")):
+        add(re.sub(rf"{a}(\d)$", rf"{b}\1", syl))
     return out
 
 

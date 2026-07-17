@@ -957,8 +957,7 @@ def render_multi(text: str):
             # written sentence, the COLLOQUIAL wording is what gets spoken —
             # nobody says the Mandarin-vocabulary text aloud in Hokkien.
             coll = hok_coll if isinstance(hok_coll, tuple) else None
-            hz = lambda s: "".join(c for c in s if ak.looks_like_hanzi(c))
-            differs = bool(coll) and hz(coll[0]) != hz(trad)
+            differs = bool(coll) and ak.hanzi_only(coll[0]) != ak.hanzi_only(trad)
             speak = coll[0] if differs else trad
             mp3 = kip = None
             try:
@@ -1000,37 +999,65 @@ def render_multi(text: str):
                 st.caption("Colloquial Taiwanese translation unavailable "
                            f"(Lohankha): {hok_coll}")
         elif dl.startswith("teochew"):
-            # No Teochew TTS engine exists anywhere (2026-07), so this is
-            # stitched from mogher.com's per-syllable dictionary recordings:
-            # "citation" plays the row as written; "spoken" approximates the
-            # ↳ spoken: line with the nearest citation-tone recordings.
-            # mogher's coverage is partial, so the two are fetched
-            # independently — one missing tone shouldn't silence both.
+            # No Teochew TTS or Mandarin→Teochew MT exists anywhere
+            # (2026-07). But Teochew shares most core vocabulary with its
+            # sister language Hokkien, so the Lohankha TAIWANESE translation
+            # (with common Taiwan-only words swapped, 今仔日→今日) is a far
+            # closer wording than the written Mandarin; audio is stitched
+            # from mogher.com's per-syllable dictionary recordings, fetched
+            # independently so one missing tone doesn't silence both plays.
+            teo_src, via = text, False
+            try:
+                cand = ak.teochew_colloquial_source(c_hokkien_colloquial(trad)[0])
+                if ak.hanzi_only(cand) != ak.hanzi_only(trad):
+                    teo_src, via = cand, True
+            except Exception:
+                pass
+            toks_t = toks
+            if via:
+                toks_t = ak.per_char_tokens(DATA, dialect, teo_src,
+                                            ak.s2t_text(teo_src))
+                md("<span style='color:#8a93a5;font-size:.82em'>"
+                   "&nbsp;&nbsp;↳ colloquial:</span> "
+                   f"<b>{_html.escape(teo_src)}</b> "
+                   "<span style='opacity:.6;font-size:.85em' title='No "
+                   "Mandarin→Teochew translator exists, but Teochew is a "
+                   "sister Southern Min language sharing most core "
+                   "vocabulary with Hokkien — so this borrows the Taiwanese "
+                   "translation, with common Taiwan-specific words swapped "
+                   "for Teochew ones (今仔日→今日, 佗位→底塊). Remaining "
+                   "vocabulary may still differ from natural Teochew; an "
+                   "approximation.'>(via Hokkien — approximate)</span>")
+                coll_line = ak.phrase_sandhi_html(
+                    toks_t, dialect, label="&nbsp;&nbsp;↳ colloquial spoken:")
+                if coll_line:
+                    md(coll_line)
             teo, errs = {}, []
             for name, spoken in (("citation", False), ("spoken", True)):
                 try:
-                    teo[name] = c_teochew_phrase(toks, spoken)
+                    teo[name] = c_teochew_phrase(toks_t, spoken)
                 except Exception as e:
                     errs.append(str(e))
             cit, spo = teo.get("citation"), teo.get("spoken")
             if cit or spo:
-                row = ("<span style='opacity:.7;font-size:.92em' "
-                       "title='Stitched from single-syllable dictionary "
+                tip = ("Stitched from single-syllable dictionary "
                        "recordings — not natural connected speech, and "
                        "the CHAOZHOU-CITY variety specifically (Teochew "
                        "varies: Shantou, Chenghai, Jieyang…). The spoken "
                        "version plays each non-final syllable with the "
                        "citation-tone recording nearest its sandhi "
-                       "contour — an approximation. Note: this reads the "
-                       "sentence AS WRITTEN, word by word — no "
-                       "Mandarin→Teochew translation service exists yet, "
-                       "so colloquial Teochew wording (今天→今日) is not "
-                       "applied.'>(Chaozhou Teochew, mogher.com, "
+                       "contour — an approximation. "
+                       + ("Plays the ↳ colloquial wording above."
+                          if via else
+                          "Reads the sentence AS WRITTEN, word by word — "
+                          "colloquial wording unavailable for this input."))
+                row = ("<span style='opacity:.7;font-size:.92em' "
+                       f"title='{tip}'>(Chaozhou Teochew, mogher.com, "
                        "stitched)</span>")
                 if cit:
-                    row += " citation " + spk_bytes(cit, ("teo-cit", text))
+                    row += " citation " + spk_bytes(cit, ("teo-cit", teo_src))
                 if spo and spo != cit:
-                    row += "&nbsp;&nbsp;spoken " + spk_bytes(spo, ("teo-spk", text))
+                    row += "&nbsp;&nbsp;spoken " + spk_bytes(spo, ("teo-spk", teo_src))
                 play_row(row)
             if errs:
                 st.caption("Chaozhou Teochew audio partly unavailable "

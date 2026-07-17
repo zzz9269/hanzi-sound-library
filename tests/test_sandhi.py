@@ -211,3 +211,24 @@ def test_phrase_sandhi_html_custom_label():
     pairs = [("豬", "ti˥"), ("肉", "baʔ˧")]
     html = ak.phrase_sandhi_html(pairs, "Hokkien", label="↳ colloquial spoken:")
     assert "colloquial spoken:" in html and "↳ spoken:" not in html
+
+
+def test_teochew_colloquial_source_swaps_taiwan_words():
+    assert ak.teochew_colloquial_source("今仔日我真爽快") == "今日我真爽快"
+    assert ak.teochew_colloquial_source("明仔載去佗位") == "明日去底塊"
+    assert ak.teochew_colloquial_source("阮食飯") == "阮食飯"   # shared stays
+    assert ak.teochew_colloquial_source("") == ""
+
+
+def test_hanzi_only_strips_punctuation():
+    assert ak.hanzi_only("你敢食飽矣？") == "你敢食飽矣"
+    assert ak.hanzi_only("a-b?!") == ""
+
+
+def test_mogher_variants_cover_coda_letter_swaps():
+    assert "rig8" in ak._mogher_variants("rik8")
+    assert "sik4" in ak._mogher_variants("sig4")
+    assert "liou2" in ak._mogher_variants("liau2")
+    # the swap only touches the coda, never the initial
+    assert ak._mogher_variants("kim1") == ["kim1"]
+    assert ak._mogher_variants("pim1") == ["pim1"]
