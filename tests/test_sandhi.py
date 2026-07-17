@@ -161,3 +161,47 @@ def test_tailo_matched_tokens_ignores_non_poj_dialects():
     data = {"好": {"Teochew": "ho2/hao3"}, "人": {"Teochew": "nang5"}}
     pairs = ak.tailo_matched_tokens(data, "Teochew", "好人", None, "hó-lâng")
     assert pairs == ak.per_char_tokens(data, "Teochew", "好人", None)
+
+
+# ----------------------- Teochew stitched audio (mogher.com) — offline --
+def test_teochew_audio_plan_citation_keeps_tones():
+    pairs = [("好", "ho2"), ("人", "nang5")]
+    assert ak.teochew_audio_plan(pairs, spoken=False) == ["ho2", "nang5"]
+
+
+def test_teochew_audio_plan_spoken_substitutes_sandhi_tone():
+    pairs = [("好", "ho2"), ("人", "nang5")]
+    # non-final tone 2 → its sandhi (35) is exactly citation tone 6
+    assert ak.teochew_audio_plan(pairs, spoken=True) == ["ho6", "nang5"]
+
+
+def test_teochew_audio_plan_checked_swap_and_groups():
+    pairs = [("八", "boih4"), ("，", None), ("人", "nang5")]
+    # 八 is group-final (punctuation splits) → keeps tone 4 even when spoken
+    assert ak.teochew_audio_plan(pairs, spoken=True) == ["boih4", "nang5"]
+    pairs = [("八", "boih4"), ("個", "gai7")]
+    assert ak.teochew_audio_plan(pairs, spoken=True) == ["boih8", "gai7"]
+
+
+def test_teochew_audio_plan_none_when_reading_missing():
+    assert ak.teochew_audio_plan([("好", "ho2"), ("骉", None)], False) is None
+    assert ak.teochew_audio_plan([("！", None)], False) is None
+
+
+def test_teochew_sandhi_audio_map_is_total_and_valid():
+    assert set(ak._TEOCHEW_SANDHI_AUDIO) == set("12345678")
+    assert set(ak._TEOCHEW_SANDHI_AUDIO.values()) <= set("12345678")
+
+
+def test_mogher_variants_cover_chaozhou_shantou_vowels():
+    assert "die5" in ak._mogher_variants("dio5")
+    assert "dio5" in ak._mogher_variants("die5")
+    assert ak._mogher_variants("ho2") == ["ho2"]
+
+
+def test_mp3_frames_strips_id3v2_and_v1():
+    body = b"\xff\xfbAUDIOFRAMES"
+    v2 = b"ID3\x04\x00\x00\x00\x00\x00\x0a" + b"x" * 10
+    v1 = b"TAG" + b"\x00" * 125
+    assert ak._mp3_frames(v2 + body + v1) == body
+    assert ak._mp3_frames(body) == body

@@ -109,6 +109,11 @@ def c_hokkien_tts(t):
     return ak.hokkien_tts_bytes(t)
 
 
+@st.cache_data(show_spinner="Fetching Chaozhou Teochew syllables (mogher.com)…")
+def c_teochew_phrase(toks, spoken):
+    return ak.teochew_phrase_mp3(toks, spoken)
+
+
 def spk_bytes(mp3: bytes, key) -> str:
     """A clickable 🔊 (with a hidden, preloaded <audio>) that plays one mp3 —
     compact replacement for the full-width st.audio bar."""
@@ -948,6 +953,38 @@ def render_multi(text: str):
             else:
                 st.caption("Taiwanese Hokkien audio unavailable (ithuan.tw): "
                            f"{hok_audio}")
+        elif dl.startswith("teochew"):
+            # No Teochew TTS engine exists anywhere (2026-07), so this is
+            # stitched from mogher.com's per-syllable dictionary recordings:
+            # "citation" plays the row as written; "spoken" approximates the
+            # ↳ spoken: line with the nearest citation-tone recordings.
+            # mogher's coverage is partial, so the two are fetched
+            # independently — one missing tone shouldn't silence both.
+            teo, errs = {}, []
+            for name, spoken in (("citation", False), ("spoken", True)):
+                try:
+                    teo[name] = c_teochew_phrase(toks, spoken)
+                except Exception as e:
+                    errs.append(str(e))
+            cit, spo = teo.get("citation"), teo.get("spoken")
+            if cit or spo:
+                row = ("<span style='opacity:.7;font-size:.92em' "
+                       "title='Stitched from single-syllable dictionary "
+                       "recordings — not natural connected speech, and "
+                       "the CHAOZHOU-CITY variety specifically (Teochew "
+                       "varies: Shantou, Chenghai, Jieyang…). The spoken "
+                       "version plays each non-final syllable with the "
+                       "citation-tone recording nearest its sandhi "
+                       "contour — an approximation.'>(Chaozhou Teochew, "
+                       "mogher.com, stitched)</span>")
+                if cit:
+                    row += " citation " + spk_bytes(cit, ("teo-cit", text))
+                if spo and spo != cit:
+                    row += "&nbsp;&nbsp;spoken " + spk_bytes(spo, ("teo-spk", text))
+                play_row(row)
+            if errs:
+                st.caption("Chaozhou Teochew audio partly unavailable "
+                           f"(mogher.com): {'; '.join(sorted(set(errs)))}")
 
 
 # =====================================================================

@@ -1330,6 +1330,130 @@ def tailo_matched_tokens(data, dialect, s, alt, kip):
     return out
 
 
+# --- Teochew phrase audio (mogher.com syllable recordings) --------------
+# No public Teochew TTS engine exists (checked 2026-07: Teochew-Wild has
+# published vocoders + ASR on HuggingFace but no acoustic model yet). The
+# next best thing is mogher.com — the 潮州音字典, Chaozhou-city standard —
+# which serves one native recording per syllable+tone. Its mp3 file names
+# use mogher's own POJ-ish spelling (zu1 → tsu1.mp3, suan2 → sua~2.mp3),
+# NOT Peng'im, and guessing collides with other syllables (Peng'im gai7
+# would fetch their [g]- initial file), so each syllable's dictionary page
+# /dic/czpy/<pengim> is scraped once for the authoritative file name; the
+# mp3 is then disk-cached like the other TTS audio.
+MOGHER_PAGE_URL = "https://www.mogher.com/dic/czpy/{}"
+MOGHER_SOUND_URL = "https://www.mogher.com/sound/syllabes/{}"
+_MOGHER_MP3_RE = re.compile(r"sound/syllabes/([^\"'<>]+?\.mp3)")
+
+
+def _mogher_variants(syl: str):
+    """Spellings to try on mogher: as-is, then the Shantou⇄Chaozhou vowel
+    alternations (our sources mix both; mogher is Chaozhou-standard)."""
+    out = [syl]
+    for a, b in (("io", "ie"), ("ie", "io"), ("uang", "ueng"),
+                 ("uag", "ueg")):
+        v = syl.replace(a, b)
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def teochew_syllable_mp3(syl: str) -> bytes:
+    """One mogher.com recording for a Peng'im syllable+tone (``ho2``).
+    Raises when mogher lists no recording for it (or any spelling variant) —
+    coverage is genuinely partial (e.g. ho2/ho7 recorded but not ho6), so
+    that outcome is remembered in a ``.miss`` marker to spare the network."""
+    import requests
+    p = _tts_cache_path(syl, "nan-teochew", "mogher")
+    miss = p.with_suffix(".miss")
+    if p.exists():
+        return p.read_bytes()
+    if miss.exists():
+        raise RuntimeError(f"mogher.com has no recording for {syl}")
+    why = None
+    for v in _mogher_variants(syl):
+        r = requests.get(MOGHER_PAGE_URL.format(v), timeout=30)
+        m = _MOGHER_MP3_RE.search(r.text) if r.ok else None
+        if not m:
+            continue
+        a = requests.get(MOGHER_SOUND_URL.format(m.group(1)), timeout=30)
+        if a.ok and len(a.content) > 512 and (
+                a.content.startswith(b"ID3") or a.content[:1] == b"\xff"):
+            p.write_bytes(a.content)
+            return a.content
+        why = f"mogher.com: audio fetch failed for {m.group(1)!r} ({syl})"
+    if why is None:                      # pages answered, just no recording
+        miss.touch()
+        why = f"mogher.com has no recording for {syl}"
+    raise RuntimeError(why)
+
+
+def _mp3_frames(mp3: bytes) -> bytes:
+    """Strip the ID3v2 header / ID3v1 trailer so several files can be
+    byte-concatenated into one playable stream."""
+    if mp3[:3] == b"ID3" and len(mp3) > 10:
+        size = 0
+        for byte in mp3[6:10]:
+            size = (size << 7) | (byte & 0x7F)
+        mp3 = mp3[10 + size:]
+    if len(mp3) > 128 and mp3[-128:-125] == b"TAG":
+        mp3 = mp3[:-128]
+    return mp3
+
+
+# Non-final syllables are played with the citation recording that best
+# approximates their SANDHI contour — mogher has only the 8 citation tones
+# (33, 52, 213, 2, 55, 35, 11, 4), so this is an admitted approximation:
+#   1: 33→34  near-unchanged, keep its own recording
+#   2: 52→35  exactly citation tone 6
+#   3: 213→53 ≈ the 52 of tone 2
+#   4: 2→54   checked high = tone 8 (the classic 4↔8 swap)
+#   5: 55→23  rising ≈ the 35 of tone 6
+#   6: 35→21  low ≈ the 11 of tone 7
+#   7: 11→23  rising ≈ the 35 of tone 6
+#   8: 4→32   checked low = tone 4
+_TEOCHEW_SANDHI_AUDIO = {"1": "1", "2": "6", "3": "2", "4": "8",
+                         "5": "6", "6": "7", "7": "6", "8": "4"}
+
+
+def teochew_audio_plan(pairs, spoken: bool):
+    """``[pengim, …]`` — one syllable+tone per Hanzi char, ready for
+    ``teochew_syllable_mp3``. ``spoken=True`` replaces each non-group-final
+    syllable's tone with the citation tone nearest its sandhi contour
+    (groups split at non-Hanzi chars, as in phrase_surface_tones).
+    ``None`` when any character lacks a plain Peng'im reading."""
+    groups, cur = [], []
+    for ch, tok in pairs:
+        if not looks_like_hanzi(ch):
+            if cur:
+                groups.append(cur)
+                cur = []
+            continue
+        cur.append(tok)
+    if cur:
+        groups.append(cur)
+    plan = []
+    for g in groups:
+        for i, tok in enumerate(g):
+            info = _syllable_tone(tok, "teochew") if tok else None
+            if not info or not re.fullmatch(r"[a-zê]+", info[0]):
+                return None
+            base, cls, _ = info
+            if spoken and i < len(g) - 1:
+                cls = _TEOCHEW_SANDHI_AUDIO.get(cls, cls)
+            plan.append(base + cls)
+    return plan or None
+
+
+def teochew_phrase_mp3(pairs, spoken: bool) -> bytes | None:
+    """Stitched mogher recordings for a phrase — citation tones, or the
+    sandhi-approximated "spoken" variant. ``None`` when a reading is
+    missing; raises when mogher lacks a recording."""
+    plan = teochew_audio_plan(pairs, spoken)
+    if not plan:
+        return None
+    return b"".join(_mp3_frames(teochew_syllable_mp3(s)) for s in plan)
+
+
 def romanization_to_english(reading: str, scheme: str | None = None) -> str:
     """Rough English sounds-like for ONE romanised syllable. The tone is shown
     as a superscript **Chao pitch contour** (e.g. ``sì`` → ``see²¹``): the tone
