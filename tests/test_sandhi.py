@@ -267,3 +267,47 @@ def test_teochew_cognate_referee_falls_back_on_misalignment(monkeypatch):
                                            "") == before
     assert ak.teochew_tailo_matched_tokens(data, "Teochew", "樂", None,
                                            "khuài-lo̍k") == before
+
+
+# ------------------------------------ round-trip accuracy gate (offline) --
+def test_roundtrip_score_ranges():
+    assert ak.roundtrip_score("我今天很快樂", "我今天很快樂") == 1.0
+    # legitimate paraphrase stays above the display threshold
+    assert ak.roundtrip_score("你吃飽了嗎？", "你是否吃飽了？") \
+        >= ak.LOHANKHA_MIN_ROUNDTRIP
+    # an unrelated sentence falls far below it
+    assert ak.roundtrip_score("我今天很快樂", "股票市場大跌") < 0.3
+    assert ak.roundtrip_score("我今天很快樂", "") == 0.0
+    assert ak.roundtrip_score("", "我今天很快樂") == 0.0
+
+
+def test_roundtrip_threshold_is_sane():
+    assert 0.5 <= ak.LOHANKHA_MIN_ROUNDTRIP <= 0.9
+
+
+def test_colloquial_verified_gates_on_score(monkeypatch, tmp_path):
+    monkeypatch.setattr(ak, "hokkien_colloquial",
+                        lambda t: ("今仔日我真爽快", "kin-á-ji̍t"))
+    monkeypatch.setattr(ak, "_tts_cache_path",
+                        lambda *a: tmp_path / "rt.mp3")
+    monkeypatch.setattr(ak, "_lohankha_mt",
+                        lambda t, i, o: ("今天我很開心", ""))
+    got = ak.hokkien_colloquial_verified("今天我很開心")
+    assert got == ("今仔日我真爽快", "kin-á-ji̍t", 1.0)
+    # a back-translation that disagrees → hidden (None), and the cached
+    # score keeps it hidden without re-asking the service
+    (tmp_path / "rt.txt").unlink()
+    monkeypatch.setattr(ak, "_lohankha_mt",
+                        lambda t, i, o: ("股票市場大跌", ""))
+    assert ak.hokkien_colloquial_verified("今天我很開心") is None
+    monkeypatch.setattr(ak, "_lohankha_mt",
+                        lambda t, i, o: (_ for _ in ()).throw(AssertionError))
+    assert ak.hokkien_colloquial_verified("今天我很開心") is None
+
+
+def test_roundtrip_score_normalizes_script_variants():
+    # the input is traditionalized (吃→喫) but the back-translation may use
+    # the other variant — must not count as a semantic mismatch
+    assert ak.roundtrip_score("你喫飽了嗎？", "你是否吃飽了？") == \
+        ak.roundtrip_score("你吃飽了嗎？", "你是否吃飽了？")
+    assert ak.roundtrip_score("你喫飽了嗎？", "你吃飽了嗎？") == 1.0

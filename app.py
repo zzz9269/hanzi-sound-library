@@ -114,9 +114,11 @@ def c_hokkien_tailo(t):
     return ak.hokkien_tailo(t)
 
 
-@st.cache_data(show_spinner="Translating to colloquial Taiwanese (Lohankha)…")
+@st.cache_data(show_spinner="Translating + verifying round-trip (Lohankha)…")
 def c_hokkien_colloquial(t):
-    return ak.hokkien_colloquial(t)
+    # (hanzi, tâi-lô, score) — or None when the back-translation check
+    # fails: accuracy over everything, hide rather than risk being wrong
+    return ak.hokkien_colloquial_verified(t)
 
 
 @st.cache_data(show_spinner="Fetching Chaozhou Teochew syllables (mogher.com)…")
@@ -970,12 +972,21 @@ def render_multi(text: str):
             coll = hok_coll if isinstance(hok_coll, tuple) else None
             differs = bool(coll) and ak.hanzi_only(coll[0]) != ak.hanzi_only(trad)
             speak = coll[0] if differs else trad
-            mp3 = kip = None
-            try:
-                mp3, kip = c_hokkien_tts(speak)
-            except Exception as e:
-                st.caption("Taiwanese Hokkien audio unavailable (ithuan.tw): "
-                           f"{e}")
+
+            def hok_tts(t):
+                try:
+                    return c_hokkien_tts(t)
+                except Exception as e:
+                    st.caption("Taiwanese Hokkien audio unavailable "
+                               f"(ithuan.tw): {e}")
+                    return None, None
+
+            mp3, kip = hok_tts(speak)
+            if differs and kip and "?" in kip:
+                # ithuan cannot read part of the translation — accuracy
+                # first: drop the colloquial line, speak the literal text
+                differs, speak = False, trad
+                mp3, kip = hok_tts(trad)
             if differs:
                 inner = ("<span style='opacity:.85'>↳ colloquial: </span>"
                          f"<b>{_html.escape(coll[0])}</b> "
@@ -986,8 +997,12 @@ def render_multi(text: str):
                          "vocabulary; this is how it is actually SAID in "
                          "Taiwanese Hokkien — words and grammar translated "
                          "by Lohankha 華→台 MT (今天→今仔日, 很→真), then "
-                         "synthesized by ithuan.tw. Machine translation can "
-                         "err.'>(colloquial Taiwanese Hokkien — Lohankha MT)"
+                         "synthesized by ithuan.tw. ✓ verified by "
+                         "back-translating to Mandarin and comparing with "
+                         f"the input: {coll[2]:.0%} match (lines below "
+                         f"{ak.LOHANKHA_MIN_ROUNDTRIP:.0%} are hidden "
+                         "entirely).'>(colloquial Taiwanese Hokkien — "
+                         f"Lohankha MT, ✓{coll[2]:.0%})"
                          "</span> " + (spk_bytes(mp3, ("nan", speak))
                                        if mp3 else ""))
                 play_row(inner, 40)
@@ -1009,6 +1024,11 @@ def render_multi(text: str):
             if isinstance(hok_coll, Exception):
                 st.caption("Colloquial Taiwanese translation unavailable "
                            f"(Lohankha): {hok_coll}")
+            elif hok_coll is None:
+                st.caption("Colloquial line hidden — the translation did "
+                           "not pass the round-trip accuracy check "
+                           f"(<{ak.LOHANKHA_MIN_ROUNDTRIP:.0%} match on "
+                           "back-translation).")
         elif dl.startswith("teochew"):
             # No Teochew TTS or Mandarin→Teochew MT exists anywhere
             # (2026-07). But Teochew shares most core vocabulary with its
@@ -1019,8 +1039,9 @@ def render_multi(text: str):
             # independently so one missing tone doesn't silence both plays.
             teo_src, via = text, False
             try:
-                cand = ak.teochew_colloquial_source(c_hokkien_colloquial(trad)[0])
-                if ak.hanzi_only(cand) != ak.hanzi_only(trad):
+                v = c_hokkien_colloquial(trad)  # None → failed round-trip
+                cand = ak.teochew_colloquial_source(v[0]) if v else ""
+                if cand and ak.hanzi_only(cand) != ak.hanzi_only(trad):
                     teo_src, via = cand, True
             except Exception:
                 pass
@@ -1040,7 +1061,8 @@ def render_multi(text: str):
                    "Mandarin→Teochew translator exists, but Teochew is a "
                    "sister Southern Min language sharing most core "
                    "vocabulary with Hokkien — so this borrows the Taiwanese "
-                   "translation, with common Taiwan-specific words swapped "
+                   "translation (which passed a back-translation accuracy "
+                   "check), with common Taiwan-specific words swapped "
                    "for Teochew ones (今仔日→今日, 佗位→底塊). Remaining "
                    "vocabulary may still differ from natural Teochew; an "
                    "approximation.'>(via Hokkien — approximate)</span>")

@@ -1379,15 +1379,10 @@ def _lohankha_ca(rebuild: bool = False) -> str:
     return str(p)
 
 
-def hokkien_colloquial(text: str) -> tuple[str, str]:
-    """``(hanzi, tâi-lô)`` — the sentence as actually SAID in Taiwanese
-    Hokkien (今天我很開心 → 今仔日我真爽快), via Lohankha's 華→台 machine
-    translation. Disk-cached; raises on network/MT failure."""
+def _lohankha_mt(text: str, input_lang: str, output_format: str):
+    """One Lohankha translation request → ``(hanzi, tâi-lô)`` (either may
+    be '' depending on the output format). Raises on failure."""
     import requests
-    p = _tts_cache_path(text, "zh2nan", "lohankha").with_suffix(".txt")
-    if p.exists():
-        han, _, lmj = p.read_text("utf-8").partition("\t")
-        return han, lmj
     s = requests.Session()
     for attempt in (0, 1):      # retry once with a rebuilt bundle: the
         try:                    # intermediates rotate every few months
@@ -1401,17 +1396,69 @@ def hokkien_colloquial(text: str) -> tuple[str, str]:
     if not m:
         raise RuntimeError("Lohankha page had no CSRF token")
     r = s.post(LOHANKHA_API, timeout=90, verify=ca,
-               data={"key": text, "input_lang": "zh-tw",
-                     "output_format": "tai-han", "lmj": "tailo", "ip": ""},
+               data={"key": text, "input_lang": input_lang,
+                     "output_format": output_format, "lmj": "tailo",
+                     "ip": ""},
                headers={"X-CSRFToken": m.group(1), "Referer": LOHANKHA_PAGE})
     r.raise_for_status()
     j = r.json()
     han = ((j.get("result") or {}).get("output") or "").strip()
     lmj = ((j.get("result") or {}).get("lmj") or "").strip()
-    if not (j.get("success") and han):
+    if not (j.get("success") and (han or lmj)):
         raise RuntimeError(f"Lohankha: {j.get('error') or 'empty result'}")
+    return han, lmj
+
+
+def hokkien_colloquial(text: str) -> tuple[str, str]:
+    """``(hanzi, tâi-lô)`` — the sentence as actually SAID in Taiwanese
+    Hokkien (今天我很開心 → 今仔日我真爽快), via Lohankha's 華→台 machine
+    translation. Disk-cached; raises on network/MT failure."""
+    p = _tts_cache_path(text, "zh2nan", "lohankha").with_suffix(".txt")
+    if p.exists():
+        han, _, lmj = p.read_text("utf-8").partition("\t")
+        return han, lmj
+    han, lmj = _lohankha_mt(text, "zh-tw", "tai-han")
+    if not han:
+        raise RuntimeError("Lohankha: empty hanzi result")
     p.write_text(f"{han}\t{lmj}", "utf-8")
     return han, lmj
+
+
+# Accuracy gate: the Taiwanese output is machine-translated BACK to
+# Mandarin and compared with the input. Legitimate paraphrase survives
+# (你吃飽了嗎 ↔ 你是否吃飽了 ≈ 0.73) while a wrong translation cannot
+# round-trip to the original. Below the bar, nothing is shown — the
+# user's standing instruction is accuracy over everything.
+LOHANKHA_MIN_ROUNDTRIP = 0.70
+
+
+def roundtrip_score(original: str, back: str) -> float:
+    """Similarity (0–1) of the Hanzi content of two sentences. Both sides
+    are script-normalized first — the input is traditionalized (吃→喫)
+    while Lohankha's back-translation may use the other variant, and that
+    must not read as a semantic mismatch."""
+    from difflib import SequenceMatcher
+    a, b = hanzi_only(s2t_text(original)), hanzi_only(s2t_text(back))
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def hokkien_colloquial_verified(text: str):
+    """``(hanzi, tâi-lô, score)`` — ``hokkien_colloquial`` gated by the
+    round-trip check; ``None`` when the score is below
+    ``LOHANKHA_MIN_ROUNDTRIP`` (show nothing rather than risk showing
+    something wrong). Both translation legs are disk-cached."""
+    han, lmj = hokkien_colloquial(text)
+    # rt2: scores from before script normalization must not be reused
+    p = _tts_cache_path(text, "zh2nan-rt2", "lohankha").with_suffix(".txt")
+    if p.exists():
+        score = float(p.read_text("utf-8").split("\t", 1)[0] or 0)
+    else:
+        back, _ = _lohankha_mt(han, "tai", "zh-tw")
+        score = roundtrip_score(text, back)
+        p.write_text(f"{score:.4f}\t{back}", "utf-8")
+    return (han, lmj, score) if score >= LOHANKHA_MIN_ROUNDTRIP else None
 
 
 # --- Teochew colloquial source (via the Hokkien translation) ------------
