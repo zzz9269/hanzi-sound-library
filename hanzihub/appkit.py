@@ -1976,7 +1976,11 @@ MC_RIMES = {
 _MC_READ = {"tɕʰ": "ch", "tʂʰ": "chr", "ʈʰ": "tr", "tɕ": "j", "tʂ": "jr",
             "dʑ": "j", "dʐ": "jr", "ʈ": "tr", "ɖ": "dr", "ɕ": "sh", "ʑ": "zh",
             "ʂ": "sh", "ʐ": "r", "ɣ": "gh", "ɦ": "h", "ŋ": "ng", "ɲ": "ny",
-            "ʔ": "'", "ɐ": "a", "ʌ": "u", "ɨ": "i", "ə": "uh", "j": "y"}
+            "ʔ": "'", "ɐ": "a", "ʌ": "u", "ɨ": "i", "ə": "uh", "j": "y",
+            # vowels/modifiers that appear in the stored MC (Baxter) IPA readings
+            # (and some coarse rime finals) — spelled so nothing raw leaks through.
+            "ɳ": "nr", "ɛ": "eh", "æ": "a", "ʰ": "h", "ʷ": "w",
+            "ɔ": "aw", "ɑ": "a", "ɡ": "g"}
 _MC_READ_KEYS = sorted(_MC_READ, key=len, reverse=True)
 
 
@@ -2016,6 +2020,31 @@ def _mc_syllable_ipa(p: dict) -> str:
     return syl
 
 
+# Tone markers that trail a stored MC IPA reading (superscript/plain digits and
+# Chao bars) — stripped to isolate the segmental syllable before respelling.
+_MC_TONE_TRAIL = "⁰¹²³⁴⁵⁶⁷⁸⁹0123456789˥˦˧˨˩"
+
+
+def _mc_reading_syllable(mc_ipa: str) -> str:
+    """First alternate of a stored ``Middle Chinese (Baxter)`` IPA reading, with
+    tie bars and the trailing tone marker stripped, e.g. ``'ɲo² | …'`` → ``'ɲo'``,
+    ``'d͡ʑiɤk⁸'`` → ``'dʑiɤk'``. Empty when there is no usable reading."""
+    tok = re.split(r"[|/]", (mc_ipa or "").replace("[ML]", ""))[0].strip()
+    tok = tok.replace("͡", "").replace("͜", "").replace("͠", "")
+    return tok.rstrip(_MC_TONE_TRAIL).strip()
+
+
+def _mc_final_of(p: dict, syllable: str) -> str:
+    """The final portion of a toneless reading — the syllable minus the initial
+    consonant implied by the position's 母. Falls back to the whole syllable when
+    the reading does not start with the expected onset."""
+    ini = MC_INITIALS.get(p["initial"])
+    onset = ini[0].split("/")[0] if ini else ""
+    if onset and syllable.startswith(onset):
+        return syllable[len(onset):]
+    return syllable
+
+
 def parse_mc_position(code: str) -> dict | None:
     chars = list((code or "").strip())
     if not chars:
@@ -2045,21 +2074,29 @@ MC_DIV_HINT = {
 }
 
 
-def mc_readable_syllable(code: str) -> str:
-    """Rough readable reconstruction of a whole position, e.g. 心合一寒平 → 'swan'."""
+def mc_readable_syllable(code: str, mc_ipa: str = "") -> str:
+    """Rough readable reconstruction of a whole position, e.g. 心合一寒平 → 'swan'.
+
+    When ``mc_ipa`` (the char's stored ``Middle Chinese (Baxter)`` reading) is
+    given, the readable is anchored on that ACTUAL reading rather than the coarse
+    per-rime table, so the breakdown never contradicts the reading chip / fanqie
+    (魚-rime 汝: chip ``ɲo²`` → ``nyo``, not the generic ``nyyiuh``)."""
     p = parse_mc_position(code)
     if not p:
         return ""
-    syl = _mc_syllable_ipa(p)
+    syl = _mc_reading_syllable(mc_ipa) or _mc_syllable_ipa(p)
     return _mc_readable(syl) if syl else ""
 
 
-def mc_position_breakdown(code: str):
+def mc_position_breakdown(code: str, mc_ipa: str = ""):
     """Per-character elucidation: list of (glyph, role-explanation) for a code,
-    in reading order, so a beginner sees what each character contributes."""
+    in reading order, so a beginner sees what each character contributes. When
+    ``mc_ipa`` is supplied the rhyme's final is read off the char's actual stored
+    reading, keeping it consistent with the reading chip and fanqie breakdown."""
     p = parse_mc_position(code)
     if not p:
         return []
+    reading = _mc_reading_syllable(mc_ipa)
     rows = []
     if p["initial"]:
         ini = MC_INITIALS.get(p["initial"])
@@ -2073,7 +2110,7 @@ def mc_position_breakdown(code: str):
     if p["chongniu"]:
         rows.append((p["chongniu"], f"chóngniǔ sub-type {p['chongniu']}"))
     if p["rime"]:
-        fin = MC_RIMES.get(p["rime"])
+        fin = _mc_final_of(p, reading) if reading else MC_RIMES.get(p["rime"])
         rows.append((p["rime"], f"the rhyme — its vowel + ending, roughly “-{_mc_readable(fin)}”"
                      if fin else "the rhyme — its vowel + ending"))
     if p["tone"]:
@@ -2081,14 +2118,15 @@ def mc_position_breakdown(code: str):
     return rows
 
 
-def explain_mc_position(code: str) -> str:
+def explain_mc_position(code: str, mc_ipa: str = "") -> str:
     """Newbie-friendly decode of one 音韻地位 code: lead with a rough reconstructed
     sound + plain-English tone, then a muted structural breakdown. e.g.
-    ``心合一寒平`` → ``sounded ~ "swan", level (flat) tone — s‑ · Div. I · 寒 rhyme``."""
+    ``心合一寒平`` → ``sounded ~ "swan", level (flat) tone — s‑ · Div. I · 寒 rhyme``.
+    Anchors the readable on the char's stored reading (``mc_ipa``) when given."""
     p = parse_mc_position(code)
     if not p:
         return ""
-    syl = _mc_syllable_ipa(p)
+    syl = _mc_reading_syllable(mc_ipa) or _mc_syllable_ipa(p)
     tone = MC_TONE_PLAIN.get(p["tone"], p["tone"])
 
     bits = []

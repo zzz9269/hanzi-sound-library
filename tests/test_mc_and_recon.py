@@ -23,6 +23,24 @@ def test_explain_mc_position_mentions_tone():
     assert "swan" in out and "level" in out
 
 
+def test_mc_readable_anchors_on_stored_reading():
+    # 汝 日開三魚上: the coarse rime table would reconstruct "nyyiuh", but the
+    # char's stored MC reading is ɲo² → the breakdown must agree with the chip.
+    assert ak.mc_readable_syllable("日開三魚上") == "nyyiuh"          # generic
+    assert ak.mc_readable_syllable("日開三魚上", "ɲo²") == "nyo"       # anchored
+    rows = dict(ak.mc_position_breakdown("日開三魚上", "ɲo²"))
+    assert "-o" in rows["魚"] and "-iuh" not in rows["魚"]
+    assert 'nyo' in ak.explain_mc_position("日開三魚上", "ɲo²")
+
+
+def test_mc_readable_strips_tone_and_tiebars_no_leak():
+    # alternates (|), tie bars, and the trailing tone marker are all stripped,
+    # and no raw IPA leaks into the readable.
+    out = ak.mc_readable_syllable("常開三清入", "d͡ʑek⁴ | foo")
+    assert out == "jek"
+    assert all(c.isascii() or c in "'“”" for c in out)
+
+
 def test_mc_entering_tone_stops_coda():
     # 入聲 swaps the nasal coda for the matching stop: 東 -ŋ → -k
     p = ak.parse_mc_position("見一東入")

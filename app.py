@@ -388,11 +388,18 @@ def _reading_row(ch, dialect, val, wikt=None):
     if dialect == "Middle Chinese (position)":
         codes = [c.strip() for c in re.split(r"\s*\|\s*", val) if c.strip()]
         md(f"**{dialect}:** `{'   ·   '.join(codes)}`")
-        for code in codes:
-            parts = ak.mc_position_breakdown(code)
+        # Anchor each position's readable on the char's actual stored MC reading
+        # so the breakdown agrees with the reading chip / fanqie (no "nyoh" vs
+        # "nyyiuh" split). Align readings to codes by index; blank → generic table.
+        mc_ipas = [r.strip() for r in
+                   re.split(r"\s*\|\s*", DATA.get(ch, {}).get("Middle Chinese (Baxter)", ""))]
+        for i, code in enumerate(codes):
+            mc_ipa = (mc_ipas[i] if len(mc_ipas) == len(codes)
+                      else mc_ipas[0] if len(mc_ipas) == 1 else "")
+            parts = ak.mc_position_breakdown(code, mc_ipa)
             if not parts:
                 continue
-            syl = ak.mc_readable_syllable(code)
+            syl = ak.mc_readable_syllable(code, mc_ipa)
             head = f" — sounded roughly like “{_html.escape(syl)}”" if syl else ""
             md(f"<span style='color:#cfcfcf;font-size:.9em'>↳ <b>{_html.escape(code)}</b>{head}</span>")
             for glyph, expl in parts:
