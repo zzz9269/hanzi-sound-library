@@ -552,3 +552,10 @@ details.fold > .fold-body { border-top: 1px solid var(--line); }
 .tree-hint { display: none; margin: 0 16px 6px; font-size: 12px; color: var(--muted); }
 @media (max-width: 760px) { .tree-hint { display: block; } }
 .tree-detail { scroll-margin-bottom: 80px; }
+
+/* reconstruction chips + symbol breakdown */
+.reading.recon { flex-wrap: wrap; }
+.recon-note { flex-basis: 100%; font-size: 12px; color: var(--muted); font-family: var(--font-ui); }
+details.note.sym .sym-block { margin: 8px 0 12px; }
+details.note.sym .sym-form { display: flex; align-items: center; gap: 8px; font-family: var(--font-ipa); font-size: 17px; margin-bottom: 4px; }
+details.note.sym .breakdown b { font-family: var(--font-ipa); font-size: 16px; min-width: 2.2em; display: inline-block; }

@@ -8,7 +8,7 @@ const DATA = "hz-data";
 const FONTS = "hz-fonts";
 const SHELL_FILES = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
-  "js/app.js", "js/data.js", "js/audio.js", "js/wikt.js", "js/tree.js",
+  "js/app.js", "js/data.js", "js/audio.js", "js/wikt.js", "js/tree.js", "js/notation.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png",
 ];
 

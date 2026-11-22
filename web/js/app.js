@@ -2,6 +2,7 @@ import * as D from "./data.js";
 import * as A from "./audio.js";
 import * as W from "./wikt.js";
 import * as T from "./tree.js";
+import * as N from "./notation.js";
 
 // ---------------------------------------------------------------- helpers --
 const $ = (s, r = document) => r.querySelector(s);
@@ -239,15 +240,37 @@ function sinoRows(e) {
   return out.join("");
 }
 
+// A reconstruction chip: the form, its respelling (from notation.js, so it
+// follows the system's own symbols) and any scholarly note under it.
+function reconHTML(r, sys) {
+  const { respell } = N.analyse(r.form, sys);
+  return `<span class="reading recon${r.m ? " ml" : ""}"><span class="t">${esc(r.form)}</span>`
+    + (r.m ? `<span class="badge-ml" title="Machine-predicted: inferred by a model, not attested in a source">ML</span>` : "")
+    + (respell ? `<span class="e" title="Rough respelling for an English reader; open “What the symbols mean” for the real sounds">${esc(respell)}</span>` : "")
+    + (r.notes?.length ? `<span class="recon-note" title="The reconstruction's own annotation">Note: ${r.notes.map(esc).join(" · ")}</span>` : "") + `</span>`;
+}
+// "What the symbols mean": one block per form, every symbol explained.
+function symbolsFold(groups) {
+  const blocks = groups.flatMap(([sys, label, rs]) => rs.map((r) => {
+    const { parts } = N.analyse(r.form, sys);
+    if (!parts.length) return "";
+    return `<div class="sym-block"><div class="sym-form">${label ? `<span class="pill">${esc(label)}</span>` : ""}<b>${esc(r.form)}</b></div>
+      <div class="breakdown">${parts.map(([sym, t]) => `<div><b>${esc(sym)}</b>${esc(t)}</div>`).join("")}</div></div>`;
+  })).filter(Boolean);
+  return blocks.length ? `<details class="note sym"><summary>What the symbols mean</summary>${blocks.join("")}</details>` : "";
+}
+
 function histRows(e) {
   const out = [];
   const g = (id) => e.v?.[D.colIdx(id)] || [];
   const n = (id) => e.n?.[D.colIdx(id)] || [];
   const oc = g("Old Chinese"), ocz = g("Old Chinese (Zhengzhang)");
   if (oc.length || ocz.length) {
-    const line = (lab, rs) => rs.length ? `<div class="readings"><span class="pill">${lab}</span>${rs.map((r) => readingHTML(r)).join("")}</div>` : "";
+    const bs = N.mergeForms(oc), zz = N.mergeForms(ocz);
+    const line = (lab, rs, sys) => rs.length ? `<div class="readings"><span class="pill">${lab}</span>${rs.map((r) => reconHTML(r, sys)).join("")}</div>` : "";
     out.push(simpleRow("Old Chinese", "上古漢語", "~1000 BCE · two rival reconstructions",
-      line("Baxter–Sagart", oc) + line("Zhengzhang", ocz)));
+      line("Baxter–Sagart", bs, "bs") + line("Zhengzhang", zz, "zz")
+      + symbolsFold([["bs", "Baxter–Sagart", bs], ["zz", "Zhengzhang", zz]])));
   }
   const pm = g("Proto-Min");
   if (pm.length) {
@@ -255,13 +278,15 @@ function histRows(e) {
     const chip = conf != null
       ? `<span class="conf" style="background:${confColor(conf)}22;color:${confColor(conf)}" title="How far the Min daughter languages agree on the reconstructed vowel. Onset, coda and tone are anchored on Middle Chinese.">vowel ${Math.round(conf * 100)}%</span>` : "";
     out.push(simpleRow("Proto-Min", "原始閩語", "★ reconstructed here from the Min languages",
-      `<div class="readings">${pm.map((r) => readingHTML(r)).join("")}${chip}</div>`));
+      `<div class="readings">${N.mergeForms(pm).map((r) => reconHTML(r, "pm")).join("")}${chip}</div>`
+      + symbolsFold([["pm", "", N.mergeForms(pm)]])));
   }
   const mc = g("Middle Chinese"), mci = g("Middle Chinese (Baxter)");
   if (mc.length || mci.length) {
     out.push(simpleRow("Middle Chinese", "中古漢語", "~600 CE · Qieyun",
       `<div class="readings">${mc.map((r) => readingHTML(r)).join("")}</div>`
-      + (mci.length ? `<div class="ipa-line" style="display:flex"><span class="lbl">IPA</span>${mci.map((r) => `<span>${esc(r.t)}${r.e ? ` <span style="color:var(--jade)">≈ ${esc(r.e)}</span>` : ""}</span>`).join("")}</div>` : "")));
+      + (mci.length ? `<div class="ipa-line" style="display:flex"><span class="lbl">IPA</span>${N.mergeForms(mci).map((r) => `<span>${esc(r.form)} <span style="color:var(--jade)">≈ ${esc(N.analyse(r.form, "mc").respell)}</span></span>`).join("")}</div>`
+        + symbolsFold([["mc", "", N.mergeForms(mci)]]) : "")));
   }
   const pos = g("Middle Chinese (position)");
   if (pos.length) {
