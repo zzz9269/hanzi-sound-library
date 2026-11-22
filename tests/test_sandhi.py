@@ -11,6 +11,12 @@ import pytest
 from hanzihub import appkit as ak
 
 
+@pytest.fixture(autouse=True)
+def _sandhi_on(monkeypatch):
+    # the apps switch the positional model off (ak.MIN_SANDHI); test the model
+    monkeypatch.setattr(ak, "MIN_SANDHI", True)
+
+
 # ------------------------------------------ Hokkien IPA contour → class --
 def test_hokkien_class_open_syllables():
     assert ak._hokkien_ipa_class("ki", "˥") == "1"        # 陰平 55

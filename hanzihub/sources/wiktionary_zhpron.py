@@ -32,31 +32,68 @@ UA = ("hanzi-sound-library/1.0 (https://github.com/zzz9269/hanzi-sound-library; 
 BATCH = 50
 
 
-def parse_zhpron(wikitext: str) -> dict[str, str]:
+MIN_RAW_KEYS = ("mn", "mn_note", "mn-t", "mn-t_note")
+
+
+def _templates(text: str, name: str) -> list[str]:
+    """Every ``{{name…}}`` template in comment-free ``text``, in order. A
+    character with several etymologies (長 cháng / zhǎng) has one zh-pron per
+    section."""
+    from ..scrapers import _extract_template
+    out, pos = [], 0
+    while True:
+        i = text.find("{{" + name, pos)
+        if i < 0:
+            return out
+        nxt = text[i + 2 + len(name):i + 3 + len(name)]
+        if nxt and not (nxt in "|}" or nxt.isspace()):   # not {{zh-pronunciation…}}
+            pos = i + 2
+            continue
+        tpl = _extract_template(text[i:], name)
+        if not tpl:
+            return out
+        out.append(tpl)
+        pos = i + len(tpl)
+
+
+def parse_zhpron(wikitext: str) -> dict:
     """``{column: romanisation}`` from a page's wikitext (same rules as the
-    live ``scrapers.fetch_wiktionary_readings``)."""
-    from ..scrapers import (_ZHPRON_COL, _clean_zhpron, _extract_template,
+    live ``scrapers.fetch_wiktionary_readings``), merged over every zh-pron
+    on the page. ``_min`` keeps the raw Min parameters per template (with
+    their place codes and vernacular/literary notes) so the web build can
+    pick Taiwanese Hokkien and Swatow Teochew readings."""
+    from ..scrapers import (_HTML_COMMENT_RE, _ZHPRON_COL, _clean_zhpron,
                             _parse_hakka, _split_top_pipes)
-    tpl = _extract_template(wikitext or "", "zh-pron")
-    if not tpl:
-        return {}
-    params = {}
-    for part in _split_top_pipes(tpl[2:-2]):
-        part = part.strip()
-        if "=" in part:
-            k, v = part.split("=", 1)
-            params[k.strip()] = v.strip()
-    out = {}
-    for key, col in _ZHPRON_COL.items():
-        v = params.get(key)
-        if v and v not in ("y", "n"):
-            cleaned = _clean_zhpron(v)
-            if cleaned and col not in out:
-                out[col] = cleaned
-    if params.get("h"):
-        hk = _parse_hakka(params["h"])
-        if hk:
-            out["Hakka"] = hk
+    text = _HTML_COMMENT_RE.sub("", wikitext or "")
+    out: dict = {}
+    raw_min = []
+    for tpl in _templates(text, "zh-pron"):
+        params = {}
+        for part in _split_top_pipes(tpl[2:-2]):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                params[k.strip()] = v.strip()
+        found = {}
+        for key, col in _ZHPRON_COL.items():
+            v = params.get(key)
+            if v and v not in ("y", "n"):
+                cleaned = _clean_zhpron(v)
+                if cleaned and col not in found:
+                    found[col] = cleaned
+        if params.get("h"):
+            hk = _parse_hakka(params["h"])
+            if hk:
+                found["Hakka"] = hk
+        for col, val in found.items():
+            have = out[col].split(" / ") if col in out else []
+            have += [r for r in val.split(" / ") if r not in have]
+            out[col] = " / ".join(have[:6])
+        mr = {k: params[k] for k in MIN_RAW_KEYS if params.get(k)}
+        if mr:
+            raw_min.append(mr)
+    if raw_min:
+        out["_min"] = raw_min
     return out
 
 
@@ -106,9 +143,11 @@ def common_chars() -> list[str]:
     return list(dict.fromkeys(chars))
 
 
-def crawl(chars, out=OUT, pause=1.0) -> dict:
+def crawl(chars, out=OUT, pause=1.0, refresh=False) -> dict:
+    """Fetch ``chars`` into the snapshot. Without ``refresh`` only characters
+    not yet in it are fetched."""
     snap = json.loads(out.read_text("utf-8")) if out.exists() else {}
-    todo = [c for c in chars if c not in snap]
+    todo = list(chars) if refresh else [c for c in chars if c not in snap]
     print(f"[zhpron] {len(snap):,} cached, {len(todo):,} to fetch")
     sess = requests.Session()
     sess.headers["User-Agent"] = UA
@@ -143,7 +182,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--all", action="store_true",
                     help="every character in the built dataset, not just common ones")
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-fetch characters already in the snapshot that have zh-pron")
     a = ap.parse_args()
+    if a.refresh:
+        snap = load()
+        crawl([c for c, v in snap.items() if v], refresh=True)
+        raise SystemExit
     chars = common_chars()
     if a.all:
         import pandas as pd

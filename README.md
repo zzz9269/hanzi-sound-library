@@ -27,6 +27,15 @@ so lookups work with no connection. Audio uses the phone's own voices for
 Mandarin, Cantonese, Japanese, Korean and Vietnamese, ithuan.tw's SuiSiann
 voice for Taiwanese Hokkien and mogher.com recordings for Teochew.
 
+Hokkien readings are **Taiwanese** and Teochew readings **Swatow (Shantou)**,
+picked from Wiktionary's place-tagged readings (with Taipei / Shantou dialect
+surveys for characters it lacks), with vernacular 白 / literary 文 marked where
+Wiktionary says. Hokkien and Teochew phrases are read **syllable by syllable in
+citation tones**: Min tone sandhi depends on word and phrase boundaries, and
+a positional model got it wrong too often, so no sandhi is applied. Teochew
+audio comes from a Chaozhou-city speaker; Swatow-only syllables (天 tiang1,
+Chaozhou tiêng1) have no recording and show without a play button.
+
 It deploys itself: every push to `main` that touches the data or `web/` runs
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml), which builds the
 data with `python -m hanzihub.build_web` and publishes `web/`. To try it
@@ -75,7 +84,8 @@ The UI shows per-topolect IPA with a **rough English approximation**,
 machine-predicted readings flagged `🤖 ML`, a collapsible locality layer
 (~75 points), per-reading provenance, TTS (Google voices for Mandarin /
 Cantonese / Japanese / Korean / Vietnamese; ithuan.tw for Taiwanese Hokkien;
-stitched mogher.com recordings for Chaozhou Teochew), a **glyph-origin** panel,
+mogher.com recordings for Teochew, both syllable by syllable in citation
+tones), a **glyph-origin** panel,
 the full Wiktionary entry, a 📖 passage reader with per-word ruby readings in
 any variety, a 🎋 classical-poetry library with recite mode, and quiz /
 spaced-repetition review.

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """English sounds-like approximations + romanisation tone recovery
 (hanzihub.appkit) — the green ≈ line."""
+import pytest
+
 from hanzihub import appkit as ak
 
 
@@ -87,12 +89,25 @@ def test_approx_html_non_phonetic_column_empty():
 
 
 # ------------------------------------------------------- sandhi hints ------
-def test_sandhi_hint_poj_tone_circle():
+# The positional model is switched off in the apps (ak.MIN_SANDHI); these
+# keep testing the model itself.
+@pytest.fixture
+def sandhi_on(monkeypatch):
+    monkeypatch.setattr(ak, "MIN_SANDHI", True)
+
+
+def test_sandhi_hint_off_by_default():
+    assert ak.MIN_SANDHI is False
+    assert ak.sandhi_hint_html("thiⁿ", "poj") == ""
+    assert ak.phrase_sandhi_html([("豬", "ti˥"), ("肉", "baʔ˧˨")], "Hokkien") == ""
+
+
+def test_sandhi_hint_poj_tone_circle(sandhi_on):
     out = ak.sandhi_hint_html("thiⁿ / thian", "poj")
     assert "˥˥" in out and "˧˧" in out       # citation 55 → sandhi 33 (1→7)
 
 
-def test_sandhi_hint_teochew():
+def test_sandhi_hint_teochew(sandhi_on):
     assert "˧˦" in ak.sandhi_hint_html("tiang1", "teochew")
 
 

@@ -117,6 +117,14 @@ def c_hokkien_tailo(t):
     return ak.hokkien_tailo(t)
 
 
+@st.cache_data(show_spinner="Synthesizing Taiwanese Hokkien syllables (ithuan.tw)…")
+def c_hokkien_phrase(t):
+    """``(mp3, tâi-lô)``: ``t`` read syllable by syllable in citation tones
+    (no tone sandhi — see ``ak.MIN_SANDHI``)."""
+    kip = ak.hokkien_tailo(t)
+    return ak.hokkien_syllables_mp3(kip), kip
+
+
 @st.cache_data(show_spinner="Translating + verifying round-trip (Lohankha)…")
 def c_hokkien_colloquial(t):
     # (hanzi, tâi-lô, score) — or None when the back-translation check
@@ -1100,8 +1108,8 @@ def render_phrase_section(text: str):
         elif dl.startswith("cantonese"):
             audio(text, ak.VOICE_YUE, text)
         elif dl.startswith("hokkien"):
-            # 意傳's SuiSiann voice speaks natural Taiwanese, sandhi
-            # included. When Lohankha's 華→台 translation differs from the
+            # Read syllable by syllable in citation tones (no sandhi: see
+            # ak.MIN_SANDHI). When Lohankha's 華→台 translation differs from the
             # written sentence, the COLLOQUIAL wording is what gets spoken —
             # nobody says the Mandarin-vocabulary text aloud in Hokkien.
             coll = hok_coll if isinstance(hok_coll, tuple) else None
@@ -1110,7 +1118,7 @@ def render_phrase_section(text: str):
 
             def hok_tts(t):
                 try:
-                    return c_hokkien_tts(t)
+                    return c_hokkien_phrase(t)
                 except Exception as e:
                     st.caption("Taiwanese Hokkien audio unavailable "
                                f"(ithuan.tw): {e}")
@@ -1206,7 +1214,7 @@ def render_phrase_section(text: str):
                 if coll_line:
                     md(coll_line)
             teo, missing = {}, []
-            for name, spoken in (("citation", False), ("spoken", True)):
+            for name, spoken in (("citation", False),):
                 mp3, miss = None, []
                 try:
                     mp3, miss = c_teochew_phrase(toks_t, spoken)
@@ -1221,10 +1229,9 @@ def render_phrase_section(text: str):
                 tip = ("Stitched from single-syllable dictionary "
                        "recordings — not natural connected speech, and "
                        "the CHAOZHOU-CITY variety specifically (Teochew "
-                       "varies: Shantou, Chenghai, Jieyang…). The spoken "
-                       "version plays each non-final syllable with the "
-                       "citation-tone recording nearest its sandhi "
-                       "contour — an approximation. "
+                       "varies: Shantou, Chenghai, Jieyang…). Each "
+                       "syllable is in its citation tone: tone sandhi is "
+                       "not applied. "
                        + ("Plays the ↳ colloquial wording above."
                           if via else
                           "Reads the sentence AS WRITTEN, word by word — "
@@ -1480,25 +1487,23 @@ def _passage_audio(dialect, sent, trad, char_reads):
         elif dl.startswith("cantonese"):
             play_row(spk(sent, ak.VOICE_YUE, rate=_READ_TTS_RATE))
         elif dl.startswith("hokkien"):
-            mp3, kip = c_hokkien_tts(trad)
+            mp3, kip = c_hokkien_phrase(trad)
             if mp3:
-                play_row(f"<span style='opacity:.7;font-size:.9em'>{_html.escape(kip or '')} "
-                         "(Taiwanese Hokkien, ithuan.tw)</span> " + spk_bytes(mp3, ("nan", sent)))
+                play_row(f"<span style='opacity:.7;font-size:.9em' title='Each syllable "
+                         "synthesized on its own, in citation tone: tone sandhi is not "
+                         f"applied.'>{_html.escape(kip or '')} "
+                         "(Taiwanese Hokkien, ithuan.tw — syllable by syllable)</span> "
+                         + spk_bytes(mp3, ("nan-syl", sent)))
         elif dl.startswith("teochew"):
-            # Play the SANDHI (spoken) version, not citation — it matches the
-            # "↳ spoken" line and is the closest we can get to connected speech:
-            # each non-final syllable uses a real recording at the citation tone
-            # nearest its sandhi contour (mogher has no connected-speech audio, so
-            # this stays stitched, not native). Falls back to citation per syllable
-            # when that tone isn't recorded, so coverage is unchanged.
-            mp3, missing = c_teochew_phrase(char_reads, True)
+            # Citation tones, syllable by syllable: no tone sandhi (see
+            # ak.MIN_SANDHI). mogher has no connected-speech audio.
+            mp3, missing = c_teochew_phrase(char_reads, False)
             if mp3:
-                play_row("<span style='opacity:.7;font-size:.9em' title='Tone sandhi "
-                         "applied (matches the ↳ spoken line). Stitched from single-"
-                         "syllable dictionary recordings — approximate, not native "
-                         "connected speech.'>(Chaozhou Teochew — spoken, "
-                         + _mogher_link() + ", stitched)</span> "
-                         + spk_bytes(mp3, ("teo-spk", sent)))
+                play_row("<span style='opacity:.7;font-size:.9em' title='Each syllable "
+                         "in its citation tone: tone sandhi is not applied. Stitched "
+                         "from single-syllable dictionary recordings.'>(Chaozhou "
+                         "Teochew, " + _mogher_link() + ", syllable by syllable)</span> "
+                         + spk_bytes(mp3, ("teo-cit", sent)))
             if missing:
                 md("<div style='color:#8a8f98;font-size:.85em'>No " + _mogher_link()
                    + " recording for " + _html.escape(" ".join(missing))

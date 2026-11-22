@@ -47,7 +47,7 @@ export async function rawEntry(ch) {
   return shard[ch] || null;
 }
 
-const MAPS = ["v", "i", "n", "h", "w", "l", "x"];   // x = word readings
+const MAPS = ["v", "i", "n", "w", "l", "x"];   // x = word readings
 /** Entry for a character with empty columns back-filled from its traditional
  *  form (the dataset is keyed by traditional characters). `from` = the
  *  traditional char used, when any back-fill happened. */

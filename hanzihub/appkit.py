@@ -316,6 +316,34 @@ def hokkien_tts_bytes(text: str) -> tuple[bytes, str]:
     return mp3, kip
 
 
+def hokkien_syllables_mp3(kip: str) -> bytes | None:
+    """Taiwanese Hokkien read ONE SYLLABLE AT A TIME, in citation tone: each
+    tâi-lô syllable of ``kip`` is synthesized on its own by ithuan.tw (a lone
+    syllable takes no tone sandhi) and the clips are joined. Hanzi that
+    ithuan echoed back unread are skipped. ``None`` if nothing was voiced."""
+    import requests
+    frames = []
+    for unit, _ in _tailo_units(kip):
+        if looks_like_hanzi(unit):
+            continue
+        for syl in (x for x in unit.split("-") if x.strip("-")):
+            p = _tts_cache_path(syl, "nan-TW", "ithuan-syllable")
+            if p.exists():
+                mp3 = p.read_bytes()
+            else:
+                try:
+                    r = requests.get(ITHUAN_SYNTH_URL, params={"taibun": syl}, timeout=30)
+                    r.raise_for_status()
+                except Exception:
+                    continue
+                mp3 = r.content
+                if len(mp3) < 512 or not (mp3.startswith(b"ID3") or mp3[:1] == b"\xff"):
+                    continue
+                p.write_bytes(mp3)
+            frames.append(_mp3_frames(mp3))
+    return b"".join(frames) or None
+
+
 # =====================================================================
 # Japanese / Korean local helpers
 # =====================================================================
@@ -1151,11 +1179,20 @@ _SANDHI_CONTOUR = {
 }
 
 
+# The positional sandhi model (every non-final syllable of a group takes its
+# sandhi tone) is off: Min sandhi depends on word and phrase boundaries,
+# neutral-tone words and, in Teochew, partly on the following tone, and the
+# Teochew table is Chaozhou city's. Wrong tones are worse than none, so Min
+# phrases are shown and played syllable by syllable in citation tones.
+MIN_SANDHI = False
+
+
 def sandhi_hint_html(reading: str, scheme: str | None) -> str:
     """Muted chip showing how the FIRST reading's tone changes when another
-    syllable follows (Min tone sandhi). ``""`` when inapplicable."""
+    syllable follows (Min tone sandhi). ``""`` when inapplicable, or while
+    ``MIN_SANDHI`` is off."""
     table = _SANDHI_CONTOUR.get(scheme or "")
-    if not table:
+    if not table or not MIN_SANDHI:
         return ""
     first = re.split(r"\s*[|/]\s*", (reading or "").strip())[0].strip()
     if not first:
@@ -1312,7 +1349,7 @@ def phrase_sandhi_html(pairs, dialect: str, label: str = "↳ spoken:") -> str:
     group-final syllables with citation. ``""`` when the dialect has no
     sandhi table or the input has no multi-syllable group."""
     scheme = ROM_SCHEME.get(dialect) or ""
-    if scheme not in _SANDHI_CONTOUR:
+    if scheme not in _SANDHI_CONTOUR or not MIN_SANDHI:
         return ""
     groups = phrase_surface_tones(pairs, scheme)
     if not groups:

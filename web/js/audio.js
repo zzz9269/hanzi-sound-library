@@ -1,7 +1,9 @@
 // Audio: the device's own speech voices (Mandarin, Cantonese, Japanese, Korean,
 // Vietnamese), mogher.com dictionary recordings (Teochew) and ithuan.tw's
 // SuiSiann neural voice (Taiwanese Hokkien). No server and no API key needed:
-// recordings play straight from their source URLs.
+// recordings play straight from their source URLs. Min phrases are played one
+// syllable at a time in citation tone: neither source applies tone sandhi
+// reliably, so the app never claims to.
 const MOGHER = "https://www.mogher.com/sound/syllabes/";
 const ITHUAN = "https://hapsing.ithuan.tw/bangtsam?taibun=";
 
@@ -64,32 +66,58 @@ export function speak(text, lang, { rate = 0.9, btn } = {}) {
   });
 }
 
-function playOne(url, btn, signal) {
+function loadAudio(url) {
+  const a = new Audio();
+  a.preload = "auto";
+  a.src = url;
+  return a;
+}
+
+function playOne(a, btn, signal, timeout = 8000) {
   return new Promise((resolve, reject) => {
-    const a = new Audio();
-    a.preload = "auto";
-    const done = (ok) => { a.onended = a.onerror = null; ok ? resolve() : reject(new Error("audio failed")); };
+    // a missing file can hang instead of failing: give up if it never starts
+    const timer = setTimeout(() => { a.src = ""; done(false); }, timeout);
+    const done = (ok) => {
+      clearTimeout(timer);
+      a.onended = a.onerror = a.onplaying = null;
+      ok ? resolve() : reject(new Error("audio failed"));
+    };
     a.onended = () => done(true);
     a.onerror = () => done(false);
-    a.onplaying = () => setBtn(btn, "playing");
-    signal.stop = () => { a.pause(); a.src = ""; resolve(); };
-    a.src = url;
+    a.onplaying = () => { clearTimeout(timer); setBtn(btn, "playing"); };
+    signal.stop = () => { clearTimeout(timer); a.pause(); a.src = ""; resolve(); };
+    if (a.error) { done(false); return; }
     a.play().catch(() => done(false));
   });
 }
 
-/** Play URLs back to back (stitched Teochew syllables). Skips failures. */
-export async function playUrls(urls, btn) {
+function pause(ms, signal) {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal.stop = () => { clearTimeout(t); resolve(); };
+  });
+}
+
+/** Play URLs one after another: stitched Teochew recordings, or Min read
+ *  syllable by syllable (`gap` ms of silence between them). The next
+ *  `ahead` files load while the current one plays. Skips failures. */
+export async function playUrls(urls, btn, { gap = 0, ahead = 2 } = {}) {
   stop();
   const signal = {};
   const me = { stop: () => { signal.cancelled = true; signal.stop?.(); }, btn };
   current = me;
   setBtn(btn, "busy");
+  const loaded = [];
+  const load = (i) => { if (i < urls.length && !loaded[i]) loaded[i] = loadAudio(urls[i]); };
   let played = 0;
-  for (const u of urls) {
+  for (let i = 0; i < urls.length; i++) {
     if (signal.cancelled) break;
-    try { await playOne(u, btn, signal); played++; } catch { /* skip a missing syllable */ }
+    for (let j = i; j <= i + ahead; j++) load(j);
+    try { await playOne(loaded[i], btn, signal); played++; } catch { /* skip a missing syllable */ }
+    loaded[i] = null;
+    if (gap && i < urls.length - 1 && !signal.cancelled) await pause(gap, signal);
   }
+  loaded.forEach((a) => { if (a) a.src = ""; });
   if (current === me) { setBtn(btn, ""); current = null; }
   if (!played && !signal.cancelled) throw new Error("no recording");
 }

@@ -5,7 +5,7 @@
 The web app is a static PWA (GitHub Pages): no server, so everything the UI
 shows per character is PRE-COMPUTED here with the same display logic the
 Streamlit app uses at request time — Chao tone letters, ≈ English
-approximations, Min sandhi hints, fanqie / MC-position breakdowns, the
+approximations, Taiwanese Hokkien and Swatow Teochew selection, fanqie / MC-position breakdowns, the
 mogher.com recording file for Teochew readings and the tâi-lô for ithuan.tw
 Hokkien audio. The browser only fetches one small shard per lookup.
 
@@ -50,8 +50,8 @@ SINO = ["Japanese", "Japanese On", "Japanese Kun", "Okinawan", "Korean (Hangul)"
 COLUMN_INFO = {
     "Mandarin": ("Mandarin", "普通話", "Pinyin", "tts:zh-CN"),
     "Cantonese": ("Cantonese", "粵語", "Jyutping", "tts:zh-HK"),
-    "Hokkien": ("Hokkien", "閩南語", "Pe̍h-ōe-jī", "ithuan"),
-    "Teochew": ("Teochew", "潮州話", "Peng'im", "mogher"),
+    "Hokkien": ("Taiwanese Hokkien", "臺語", "Pe̍h-ōe-jī", "ithuan"),
+    "Teochew": ("Teochew (Swatow)", "潮州話 · 汕頭", "Peng'im", "mogher"),
     "Eastern Min (Fuzhou)": ("Fuzhou", "福州話", "Foochow Romanized", ""),
     "Northern Min (Jian'ou)": ("Jian'ou", "建甌話", "Kienning Colloquial", ""),
     "Hainanese (Haikou)": ("Hainanese", "海南話", "IPA · Haikou", ""),
@@ -93,36 +93,48 @@ def _strip_tags(s: str) -> str:
 
 
 # --- Hokkien POJ → Tâi-lô (the spelling ithuan.tw's synthesiser reads) -----
-def poj_to_tailo(s: str) -> str:
-    t = unicodedata.normalize("NFC", s or "")
-    t = t.replace("ⁿ", "nn").replace("o͘", "oo").replace("O͘", "Oo")
-    t = re.sub(r"chh", "tsh", t)
-    t = re.sub(r"ch", "ts", t)
-    nfd = unicodedata.normalize("NFD", t)
-    base = "".join(c for c in nfd if not unicodedata.combining(c))
-    # vowel-sequence and coda respellings, done on the mark-free base then
-    # the tone mark is re-applied to the same vowel letter
-    marks = [(i, c) for i, c in enumerate(nfd) if unicodedata.combining(c)]
-    if marks:
-        # index of the base letter each mark sits on
-        pos, bi = [], -1
-        for c in nfd:
-            if unicodedata.combining(c):
-                pos.append(bi)
-            else:
-                bi += 1
-        mark_at = {p: m for p, (_, m) in zip(pos, marks)}
+_POJ_TONE_MARKS = "\u0300\u0301\u0302\u0304\u0306\u030c\u030d"
+_POJ_RE = re.compile(r"[A-Za-z\u0300-\u036fⁿ-]+")
+
+
+def is_poj(s: str) -> bool:
+    """A POJ / Tâi-lô spelling (Latin letters, tone marks, ⁿ, o͘), not IPA."""
+    return bool(s) and bool(_POJ_RE.fullmatch(unicodedata.normalize("NFD", s)))
+
+
+def _tailo_syllable(syl: str) -> str:
+    nfd = unicodedata.normalize("NFD", syl)
+    nfd = re.sub(r"([oO])([\u0300-\u0357\u0359-\u036f]*)\u0358", r"\1\2o", nfd)   # o͘ → oo
+    tone = next((c for c in nfd if c in _POJ_TONE_MARKS), "")
+    t = "".join(c for c in nfd if not unicodedata.combining(c))
+    t = t.replace("ⁿ", "nn")
+    for a, b in (("chh", "tsh"), ("Chh", "Tsh"), ("ch", "ts"), ("Ch", "Ts"),
+                 ("oa", "ua"), ("oe", "ue"), ("eng", "ing"), ("ek", "ik")):
+        t = t.replace(a, b)
+    if not tone:
+        return unicodedata.normalize("NFC", t)
+    # Tâi-lô puts the mark on a, else the first o of oo, else e / o, else
+    # the second of iu / ui, else the lone i / u, else syllabic m / n(g)
+    low = t.lower()
+    vowels = [i for i, c in enumerate(low) if c in "aeiou"]
+    if "a" in low:
+        at = low.index("a")
+    elif "oo" in low:
+        at = low.index("oo")
+    elif any(c in low for c in "eo"):
+        at = min(low.index(c) for c in "eo" if c in low)
+    elif vowels:
+        at = vowels[-1]
     else:
-        mark_at = {}
-    letters = list(base)
-    swaps = [("oa", "ua"), ("oe", "ue"), ("eng", "ing"), ("ek", "ik")]
-    joined = "".join(letters)
-    for a, b in swaps:
-        joined = joined.replace(a, b)
-    out = []
-    for i, ch in enumerate(joined):
-        out.append(ch + (mark_at.get(i, "")))
-    return unicodedata.normalize("NFC", "".join(out))
+        at = next((i for i, c in enumerate(low) if c in "mn"), 0)
+    return unicodedata.normalize("NFC", t[:at + 1] + tone + t[at + 1:])
+
+
+def poj_to_tailo(s: str) -> str:
+    """POJ (``góa``, ``ngó͘``, ``thiⁿ``, ``chhiū``) → Tâi-lô (``guá``,
+    ``ngóo``, ``thinn``, ``tshiū``), tone mark moved to where Tâi-lô puts it."""
+    s = unicodedata.normalize("NFC", s or "")
+    return "-".join(_tailo_syllable(x) for x in s.split("-"))
 
 
 _YUE_INITIALS = [("t͡sʰ", "c"), ("t͡s", "z"), ("kʷʰ", "kw"), ("kʷ", "gw"), ("pʰ", "p"),
@@ -159,16 +171,315 @@ def yue_ipa_to_jyutping(ipa: str) -> str:
     return f"{ini}{seg}{tone}"
 
 
+# --- Min: Taiwanese Hokkien and Swatow (Shantou) Teochew --------------------
+# Wiktionary's zh-pron tags Min readings by place: Hokkien ``mn=`` groups are
+# ``codes:reading`` (tw = Taiwan general, tp Taipei, kh Kaohsiung …; xm Xiamen,
+# qz Quanzhou, zz Zhangzhou …), and the Teochew ``mn-t_note`` says which
+# readings are Chaozhou-city-only, Chaoyang-only and so on. Both notes also say
+# which readings are vernacular (白) and which literary (文).
+TW_CODES = {"tp", "kh", "tn", "tc", "yl", "hc"}          # major Taiwanese cities
+TW_PLACES = ("taiwan", "taipei", "kaohsiung", "tainan", "taichung", "yilan", "hsinchu")
+TEO_PLACES = ("chaozhou", "shantou", "swatow", "jieyang", "chenghai", "chaoyang", "puning",
+              "huilai", "raoping", "chao'an", "chaoan", "nan'ao", "nanao", "haimen", "dahao",
+              "pontianak", "bangkok", "singapore", "malaysia", "thailand", "kuching")
+HOK_PLACES = ("xiamen", "amoy", "quanzhou", "zhangzhou", "jinjiang", "penang", "manila",
+              "philippines", "medan", "lukang", "sanxia", "kinmen", "magong", "zhangpu")
+SWATOW = ("shantou", "swatow")
+_DASH = r"\s[-–—]\s"
+
+
+def _split_top(s: str, sep: str = ";") -> list[str]:
+    parts, depth, cur = [], 0, []
+    for c in s:
+        depth += c in "([{"
+        depth -= c in ")]}" and depth > 0
+        if c == sep and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+    parts.append("".join(cur))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def min_note_info(note: str, home: tuple[str, ...]) -> dict[str, dict]:
+    """``{reading: {"k": "v"|"l"|"", "places": set, "rare": bool}}`` from a
+    zh-pron Min note such as ``"tin1 - vernacular; tiêng1/tiang1 - literary
+    (tiêng1 - Chaozhou)"``. ``home`` are the place names this app reads for:
+    a line scoped to other places (``"Xiamen, Quanzhou: koe - vernacular; ke
+    - literary"``) doesn't label readings. ``rare`` marks readings the note
+    limits to one word (地 ``tī - … only used in 土地公``)."""
+    info: dict[str, dict] = {}
+    if not note:
+        return info
+
+    def places(text: str) -> set:
+        low = text.lower()
+        return {p for p in TEO_PLACES + TW_PLACES + HOK_PLACES if p in low}
+
+    note = unicodedata.normalize("NFC", note)
+    for line in re.split(r"\n|<br\s*/?>", note):
+        rare_line = bool(re.search(r"\bonly (?:used )?in\b", line))
+        line = re.sub(r"\{\{[^{}]*\}\}", "", line)
+        # a leading "Place, Place:" scopes the line to those places
+        scope = re.match(r"^\s*([A-Z][A-Za-z' ]*(?:,\s*[A-Z][A-Za-z' ]*)*):", line)
+        use_labels = True
+        if scope:
+            if places(scope.group(1)):
+                use_labels = any(h in scope.group(1).lower() for h in home)
+            line = line[scope.end():]                 # ("Other readings:" scopes nothing)
+        _note_clauses(line, home, use_labels, rare_line, places, info)
+    return info
+
+
+def _note_clauses(note, home, use_labels, rare_line, places, info):
+    for clause in _split_top(note, ";"):
+        m = re.match(rf"(.+?){_DASH}(.*)$", clause, re.S)
+        if not m:
+            continue
+        left, right = m.group(1).rsplit(":", 1)[-1], m.group(2)
+        subs = re.findall(rf"\(([^()]*?){_DASH}([^()]*)\)", right)
+        top = re.sub(rf"\([^()]*?{_DASH}[^()]*\)", "", right)
+        # "vernacular (Xiamen, Zhangzhou), literary (Quanzhou, Taiwan)": the
+        # stratum differs by place, so take the one naming a home place
+        segs = [("l" if s.lower() == "literary" else "v", places(p or ""))
+                for s, p in re.findall(r"(vernacular|colloquial|literary)\s*(?:\(([^()]*)\))?",
+                                       top, re.I)]
+        k = ""
+        if len(segs) == 1:
+            k = segs[0][0]
+        elif segs:
+            k = next((s for s, ps in segs if ps & set(home)),
+                     next((s for s, ps in segs if not ps), ""))
+        rare = rare_line and bool(re.search(r"\bonly (?:used )?in\b", clause))
+        for r in (x.strip() for x in re.split(r"[/,]", left)):
+            if r:
+                d = info.setdefault(r, {"k": "", "places": set(), "rare": False})
+                if use_labels and k:
+                    d["k"] = k
+                d["places"] |= places(top)
+                d["rare"] |= rare
+        for sub_left, sub_right in subs:
+            for r in (x.strip() for x in re.split(r"[/,]", sub_left)):
+                if r:
+                    info.setdefault(r, {"k": "", "places": set(), "rare": False})["places"] |= places(sub_right)
+
+
+def _min_groups(val: str):
+    """``[(codes, reading)]`` from a zh-pron Min value (``tw,kh:kiâⁿ/hêng``)."""
+    out = []
+    for g in (val or "").split("/"):
+        g = g.strip()
+        if not g:
+            continue
+        codes, rd = (g.split(":", 1) if ":" in g else ("", g))
+        codes = {c.strip() for c in codes.split(",") if c.strip()}
+        for r in ([rd] if codes else rd.split(",")):
+            r = unicodedata.normalize("NFC", r.split(">")[0].strip())
+            if r and "=" not in r and not _HAN_CHAR.search(r):
+                out.append((codes, r))
+    return out
+
+
+def taiwanese_readings(min_raw: list[dict]) -> list[tuple[str, str]]:
+    """Taiwanese Hokkien readings ``[(poj, "v"|"l"|"")]`` from the raw Min
+    parameters of every zh-pron on a page: readings tagged for Taiwan (or
+    untagged, i.e. general), most widely used first, vernacular before
+    literary as Wiktionary orders them. ``[]`` when none apply to Taiwan."""
+    found = []                           # (reading, label, score, order, wide)
+    for ti, t in enumerate(min_raw or []):
+        info = min_note_info(t.get("mn_note", ""), TW_PLACES)
+        groups = _min_groups(t.get("mn", ""))
+        mixed = any(codes for codes, _ in groups)
+        for codes, r in groups:
+            # untagged = general; but an untagged reading listed beside
+            # place-tagged ones (你 …/lú/ní) is not the main one, and one in
+            # a later etymology (王 ōng "to rule", 樂 ngāu) yields to the main
+            # etymology's Taiwanese reading
+            score = ((3 if mixed else 6 if ti == 0 else 4) if not codes
+                     else (5 if "tw" in codes else 0) + len(codes & TW_CODES))
+            if info.get(r, {}).get("rare"):
+                score = min(score, 1)
+            # heard across Taiwan by name: untagged alone, or 3+ cities listed
+            wide = (not codes and not mixed) or len(codes & TW_CODES) >= 3
+            if score > 0 and r not in (x[0] for x in found):
+                found.append((r, info.get(r, {}).get("k", ""), score, len(found), wide))
+    # Wiktionary's order, grouped by label; readings heard in only one or two
+    # Taiwanese cities (你 Taipei lú, Hsinchu lír) come last. When the main
+    # etymology is literary in Taiwan, an everyday reading Wiktionary lists
+    # for city after city leads instead (食 chia̍h before si̍t), but not a
+    # Min-only word merely tagged "Taiwan" (地 tè, an alternative form of 塊).
+    groups = list(dict.fromkeys([x[1] for x in found if x[2] >= 3]
+                                + [x[1] for x in found]))
+    if len(groups) > 1 and groups[0] == "l":
+        nxt = next((x for x in found if x[1] == groups[1] and x[2] >= 3), None)
+        if nxt and nxt[4]:
+            groups[0], groups[1] = groups[1], groups[0]
+    found.sort(key=lambda x: (x[2] < 3, groups.index(x[1]), -x[2], x[3]))
+    return [(x[0], x[1]) for x in found]
+
+
+def swatow_readings(min_raw: list[dict]) -> list[tuple[str, str]]:
+    """Swatow (Shantou) Teochew readings ``[(pengim, "v"|"l"|"")]``: drops the
+    readings Wiktionary's note limits to other places (Chaozhou city's
+    -iêng/-uêng, Chaoyang's -u for -e …). Falls back to every reading when
+    the note would leave none.
+
+    Teochew readings are rarely labelled, so the zh-pron holding the leading
+    Taiwanese reading goes first: each zh-pron is one etymology or stratum
+    across Min, so 食's chia̍h sits with ziah8 and 人's lâng with nang5, and
+    the everyday reading leads in Teochew too."""
+    raw = list(min_raw or [])
+    tw = taiwanese_readings(raw)
+    if tw:
+        lead = next((i for i, t in enumerate(raw)
+                     if any(r == tw[0][0] for _, r in _min_groups(t.get("mn", "")))), 0)
+        raw.insert(0, raw.pop(lead))
+    every, kept = [], []
+    for t in raw:
+        info = min_note_info(t.get("mn-t_note", ""), SWATOW)
+        for _, r in _min_groups(t.get("mn-t", "")):
+            if r in (x[0] for x in every):
+                continue
+            d = info.get(r, {"k": "", "places": set(), "rare": False})
+            every.append((r, d["k"]))
+            if not d["places"] or any(p in d["places"] for p in SWATOW):
+                kept.append((r, d["k"]))
+    return kept or every
+
+
+# Shantou dialect-survey IPA → Peng'im, for characters Wiktionary lacks
+_TEO_INITIALS = [("t͡ɕʰ", "c"), ("tɕʰ", "c"), ("t͡ɕ", "z"), ("tɕ", "z"), ("d͡ʑ", "r"), ("dʑ", "r"),
+                 ("ɕ", "s"), ("ᵐb", "bh"), ("ᵑg", "gh"),
+                 ("t͡sʰ", "c"), ("tsʰ", "c"), ("t͡s", "z"), ("ts", "z"), ("d͡z", "r"),
+                 ("dz", "r"), ("pʰ", "p"), ("tʰ", "t"), ("kʰ", "k"), ("p", "b"), ("t", "d"),
+                 ("k", "g"), ("b", "bh"), ("g", "gh"), ("ŋ", "ng"), ("m", "m"), ("n", "n"),
+                 ("l", "l"), ("s", "s"), ("z", "r"), ("h", "h")]
+_TEO_TONES_OPEN = {"˧": 1, "˧˧": 1, "˥˨": 2, "˥˧": 2, "˥˧˨": 2, "˨˩˧": 3, "˨˩˨": 3, "˨˩˧˨": 3,
+                   "˥": 5, "˥˥": 5, "˧˥": 6, "˨˥": 6, "˩": 7, "˩˩": 7, "˨˩": 7, "˨˨": 7, "˨": 7}
+_TEO_TONES_CHECKED = {"˨": 4, "˧˨": 4, "˨˩": 4, "˩": 4, "˧": 4,
+                      "˦": 8, "˥": 8, "˥˦": 8, "˦˥": 8}
+
+
+def shantou_ipa_to_pengim(ipa: str) -> str:
+    """Shantou IPA syllable (``kʰɯ˨˩˧``, ``tʰĩ˧˧``, ``poiʔ˨``) → Peng'im
+    (``ke3``, ``tin1``, ``boih4``); ``""`` if it doesn't parse cleanly."""
+    m = re.fullmatch(r"([^˥˦˧˨˩]+)([˥˦˧˨˩]+)", unicodedata.normalize("NFD", (ipa or "").strip())
+                     .replace("̚", "").replace("͡", "͡"))
+    if not m:
+        return ""
+    seg, contour = unicodedata.normalize("NFC", m.group(1)).replace("ɡ", "g"), m.group(2)
+    nasal = "̃" in unicodedata.normalize("NFD", seg)
+    seg = unicodedata.normalize("NFC", unicodedata.normalize("NFD", seg).replace("̃", ""))
+    seg = seg.replace("̩", "").replace("̍", "")        # syllabic marks
+    if seg in ("m", "ŋ"):
+        ini, rime = "", seg
+    else:
+        ini = ""
+        for a, b in _TEO_INITIALS:
+            if seg.startswith(a) and len(seg) > len(a):
+                ini, seg = b, seg[len(a):]
+                break
+        rime = seg
+    coda = ""
+    for a, b in (("ŋ", "ng"), ("m", "m"), ("p", "b"), ("k", "g"), ("ʔ", "h")):
+        if rime.endswith(a) and len(rime) > len(a):
+            rime, coda = rime[:-len(a)], b
+            break
+    rime = rime.replace("ɯ", "E").replace("e", "ê").replace("E", "e").replace("au", "ao")
+    if rime in ("m", "ŋ"):
+        rime = "ng" if rime == "ŋ" else "m"
+    if not re.fullmatch(r"(i|u)?(a|o|ê|e|i|u)(i|o|u)?", rime) and rime not in ("m", "ng"):
+        return ""
+    checked = coda in ("b", "g", "h")
+    tone = (_TEO_TONES_CHECKED if checked else _TEO_TONES_OPEN).get(contour)
+    if not tone:
+        return ""
+    return f"{ini}{rime}{'n' if nasal and not coda else ''}{coda}{tone}"
+
+
+def xlsx_to_pengim(r: str) -> str:
+    """The Teochew spreadsheet's spelling → Peng'im where it is unambiguous:
+    it writes ``e`` for ê and ``au`` for ao (it also writes ``u`` for the ɯ
+    vowel, which can't be told apart from u, so that stays)."""
+    r = (r or "").strip()
+    if not re.fullmatch(r"[a-z]+[1-8]", r):
+        return ""
+    return r.replace("e", "ê").replace("au", "ao")
+
+
+def _drop_chaozhou_doublets(xs: list[str], pat: str, repl: str) -> list[str]:
+    """Drop Chaozhou-city -iêng/-uêng (IPA -ieŋ/-ueŋ) forms when the Swatow
+    -iang/-uang counterpart is also listed (the survey data mixes both)."""
+    return [x for x in xs if not (re.search(pat, x) and re.sub(pat, repl, x) in xs)]
+
+
+def min_column(col, zh, bucket, ds_roms, wikt_roms):
+    """Readings for Hokkien (Taiwanese) or Teochew (Swatow):
+    ``(picked, local_ipa, unverified)`` where ``picked`` is
+    ``[(reading, ml, "v"|"l"|"")]`` or ``None`` to keep the generic readings,
+    and ``local_ipa`` the Taipei / Shantou survey IPA for the IPA line."""
+    raw = (zh or {}).get("_min") or []
+    if col == "Hokkien":
+        loc = [a for a in _alts(bucket.get("dial:Min-Taipei", "")) if ak.has_ipa(a)]
+        picked = taiwanese_readings(raw)
+        return ([(r, False, k) for r, k in picked] if picked else None,
+                list(dict.fromkeys(loc)), False)
+    loc = [a for a in _alts(bucket.get("dial:Min-Shantou", "")) if ak.has_ipa(a)]
+    loc = _drop_chaozhou_doublets(list(dict.fromkeys(loc)), r"([iu])e(ŋ|k)", r"\1a\2")
+    picked = swatow_readings(raw)
+    if picked:
+        return [(r, False, k) for r, k in picked], loc, False
+    conv = [c for c in dict.fromkeys(shantou_ipa_to_pengim(a) for a in loc) if c]
+    conv = _drop_chaozhou_doublets(conv, r"([iu])ê(ng|g)", r"\1a\2")
+    if conv:
+        return [(c, False, "") for c in conv], loc, False
+    xl = [(xlsx_to_pengim(r), ml, "") for r, ml in ds_roms if xlsx_to_pengim(r)]
+    return (xl, loc, True) if xl else ([], loc, False)
+
+
+# Teochew syllables that exist in Chaozhou city, where mogher.com's recordings
+# come from. Swatow -iang/-uang/-iag/-uag often stand where Chaozhou says
+# -iêng/-uêng/-iêg/-uêg (天 tiang1 ~ tiêng1, 關 guang1 ~ guêng1), and mogher
+# has no file for those, so such readings get no play button rather than a
+# silent one. ``None`` = unknown, don't filter.
+CZ_SYLLABLES: set | None = None
+# Chaozhou dialect-survey tone contours → the Shantou ones shantou_ipa_to_pengim
+# reads (checked against Wiktionary's Peng'im: 97-99% per tone)
+_CZ_TONE = {"˧˧˨": "˧", "˥˨": "˥˨", "˨˩˧": "˨˩˧", "˨": "˨", "˥˥˦": "˥", "˨˥": "˧˥",
+            "˨˩": "˩", "˥˦": "˦"}
+_CZ_VOWEL = str.maketrans({"ə": "ɯ", "ɛ": "e", "ɜ": "e"})
+
+
+def chaozhou_pengim(ipa: str) -> str:
+    """Chaozhou survey IPA (``tʰieŋ˧˧˨``, ``tsə˧˧˨``) → Peng'im (``tiêng1``,
+    ``ze1``); ``""`` if it doesn't parse."""
+    m = re.fullmatch(r"(.+?)([˥˦˧˨˩]+)", (ipa or "").strip())
+    if not m or m.group(2) not in _CZ_TONE:
+        return ""
+    return shantou_ipa_to_pengim(m.group(1).translate(_CZ_VOWEL) + _CZ_TONE[m.group(2)])
+
+
+def chaozhou_syllables(data: dict) -> set:
+    return {p for bucket in data.values()
+            for a in _alts(bucket.get("dial:Min-Chaozhou", ""))
+            if (p := chaozhou_pengim(a))}
+
+
 def _audio_key(col: str, rom: str) -> str:
     if col == "Teochew" and re.fullmatch(r"[a-zê]+\d", rom):
+        if CZ_SYLLABLES and re.search(r"[iu]a(ng|g)\d$", rom) and rom not in CZ_SYLLABLES:
+            return ""
         f = ak.pengim_to_mogher_file(rom)
         return f"m:{f}" if f else ""
-    if col == "Hokkien" and rom and not ak.has_ipa(rom):
+    if col == "Hokkien" and is_poj(rom):          # (ak.has_ipa counts ⁿ as IPA)
         return "h:" + poj_to_tailo(rom)
     return ""
 
 
-def _reading(t, e="", ml=False, a=""):
+def _reading(t, e="", ml=False, a="", k="", q=False):
+    """One reading for the app: t display text, e ≈English, m machine-
+    predicted, a audio key, k "v" vernacular / "l" literary, q unverified."""
     r = {"t": t}
     if e:
         r["e"] = e
@@ -176,6 +487,10 @@ def _reading(t, e="", ml=False, a=""):
         r["m"] = 1
     if a:
         r["a"] = a
+    if k:
+        r["k"] = k
+    if q:
+        r["q"] = 1
     return r
 
 
@@ -202,7 +517,7 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
     k = [m.get("strokes") or 0, m.get("radical") or 0, rank or 0]
     if any(k):
         e["k"] = k
-    v, ipa, notes, hint, wik = {}, {}, {}, {}, {}
+    v, ipa, notes, wik = {}, {}, {}, {}
     for col in SINITIC:
         val, rom_w = bucket.get(col, ""), (zh or {}).get(col, "")
         roms, ipas, ipa_raw = [], [], []
@@ -217,6 +532,7 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
             else:
                 roms.append((a, ml))
         scheme = ROM_SCHEME.get(col)
+        ds_roms = list(roms)                     # the dataset's own (pre-Wiktionary)
         if rom_w:
             roms = [(r.strip(), False) for r in rom_w.split(" / ") if r.strip()]
             wik[colidx[col]] = 1
@@ -237,23 +553,30 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
             # kMandarin is Unihan's "most customary" reading: lead with it
             # (Wiktionary lists 的 as dì, dí, de, dī)
             roms.sort(key=lambda x: x[0] != uh[0][0])
+        labels, unverified = {}, False
+        if col in ("Hokkien", "Teochew"):
+            picked, loc_ipa, unverified = min_column(col, zh, bucket, ds_roms, roms)
+            if picked is not None:
+                roms = [(r, ml) for r, ml, _ in picked]
+                labels = {r: k for r, _, k in picked if k}
+            if loc_ipa:
+                ipas = [_reading(ak.tones_to_chao(a, col), _ipa_en(col, a)) for a in loc_ipa]
         out = []
         for r, ml in roms:
             disp = r if col in KEEP_NATIVE_TONES else ak.wikt_rom_to_chao(r, scheme)
             if col == "Teochew" and disp == r:
                 disp = ak.tones_to_chao(r, col)
             en = ak.romanization_to_english(r, scheme) if scheme else ""
-            out.append(_reading(disp, en, ml, _audio_key(col, r)))
+            audio = "" if unverified else _audio_key(col, r)
+            out.append(_reading(disp, en, ml, audio, labels.get(r, ""), unverified))
         out = list({r["t"]: r for r in out}.values())
         ipas = list({r["t"]: r for r in ipas}.values())
         if out:
             v[colidx[col]] = out
         if ipas:
             ipa[colidx[col]] = ipas
-        if roms and scheme in ("poj", "teochew"):
-            h = _strip_tags(ak.sandhi_hint_html(roms[0][0], scheme))
-            if h:
-                hint[colidx[col]] = h.replace("sandhi", "").replace("non-final", "").strip()
+        # (no tone-sandhi hints: the app reads Min syllable by syllable in
+        # citation tones; positional sandhi was not reliable enough to show)
     for col in HIST + SINO + ["Definition"]:
         if col == "Definition" or not bucket.get(col):
             continue
@@ -310,7 +633,7 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
         if col.startswith("dial:") and val:
             loc[colidx[col]] = [_reading(ak.tones_to_chao(a), ak.ipa_to_english(ak.tones_to_chao(a)))
                                 for a in _alts(val)]
-    for key, d in (("v", v), ("i", ipa), ("n", notes), ("h", hint), ("w", wik), ("l", loc)):
+    for key, d in (("v", v), ("i", ipa), ("n", notes), ("w", wik), ("l", loc)):
         if d:
             e[key] = d
     return e
@@ -375,6 +698,8 @@ def _dump(path: Path, obj):
 def build(out: Path = OUT, verbose=True):
     t0 = time.time()
     data, cols = ak.load_combined(str(paths.COMBINED_PARQUET.with_suffix(".csv")))
+    global CZ_SYLLABLES
+    CZ_SYLLABLES = chaozhou_syllables(data) or None
     meta = ak.char_meta()
     zh = wiktionary_zhpron.load()
     uh = unihan_readings.load()

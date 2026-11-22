@@ -68,10 +68,10 @@ function ttsBtn(text, lang, { small = false, label = "Play" } = {}) {
   return `<button class="play${small ? " small" : ""}" data-tts="${lang}" data-text="${esc(text)}"
     aria-label="${esc(label)}" ${ok ? "" : `disabled title="No ${lang} voice on this device"`}>${ICON.play}</button>`;
 }
-function urlBtn(urls, { small = false, label = "Play" } = {}) {
+function urlBtn(urls, { small = false, label = "Play", gap = 0 } = {}) {
   const list = (Array.isArray(urls) ? urls : [urls]).filter(Boolean);
   if (!list.length) return "";
-  return `<button class="play${small ? " small" : ""}" data-urls="${esc(JSON.stringify(list))}" aria-label="${esc(label)}">${ICON.play}</button>`;
+  return `<button class="play${small ? " small" : ""}" data-urls="${esc(JSON.stringify(list))}"${gap ? ` data-gap="${gap}"` : ""} aria-label="${esc(label)}" title="${esc(label)}">${ICON.play}</button>`;
 }
 document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest(".play");
@@ -80,7 +80,7 @@ document.addEventListener("click", async (ev) => {
   if (btn.classList.contains("playing") || btn.classList.contains("busy")) { A.stop(); return; }
   try {
     if (btn.dataset.tts) await A.speak(btn.dataset.text, btn.dataset.tts, { btn, rate: +(btn.dataset.rate || 0.9) });
-    else if (btn.dataset.urls) await A.playUrls(JSON.parse(btn.dataset.urls), btn);
+    else if (btn.dataset.urls) await A.playUrls(JSON.parse(btn.dataset.urls), btn, { gap: +(btn.dataset.gap || 0) });
   } catch {
     toast(btn.dataset.tts ? "No voice for this language on your device" : "No recording available for this reading");
   }
@@ -92,8 +92,15 @@ document.addEventListener("voices-ready", () => {
 });
 
 // -------------------------------------------------------------- readings ----
+const STRATUM = {
+  v: ["白", "Vernacular (白讀): the everyday spoken reading"],
+  l: ["文", "Literary (文讀): the reading used in formal words and when reciting classical texts"],
+};
 function readingHTML(r, { audio = "" } = {}) {
+  const k = STRATUM[r.k];
   return `<span class="reading${r.m ? " ml" : ""}"><span class="t">${esc(r.t)}</span>`
+    + (k ? `<span class="badge-k ${r.k}" title="${esc(k[1])}">${k[0]}</span>` : "")
+    + (r.q ? `<span class="badge-q" title="Unverified spelling: from a survey spreadsheet that writes one letter for two vowels">?</span>` : "")
     + (r.m ? `<span class="badge-ml" title="Machine-predicted: inferred by a model, not attested in a source">ML</span>` : "")
     + (r.e ? `<span class="e">${esc(r.e)}</span>` : "") + audio + `</span>`;
 }
@@ -116,11 +123,9 @@ function rowHTML(col, e, extra = "") {
   const ipaLine = roms.length && ipas.length
     ? `<div class="ipa-line"><span class="lbl">IPA</span>${ipas.map((r) =>
         `<span>${esc(r.t)}${r.m ? '<span class="badge-ml">ML</span>' : ""}</span>`).join("")}</div>` : "";
-  const sandhi = e.h?.[k]
-    ? `<div class="sandhi">Before another syllable the tone shifts <span class="ipa">${esc(e.h[k])}</span></div>` : "";
   return `<div class="rd-row">
     <div class="rd-label"><b>${esc(col.label)}</b><span class="native">${esc(col.native || "")}</span><span class="scheme">${esc(col.scheme || "")}</span></div>
-    <div class="rd-vals"><div class="readings">${items}${rowPlay}</div>${ipaLine}${sandhi}${extra}</div>
+    <div class="rd-vals"><div class="readings">${items}${rowPlay}</div>${ipaLine}${extra}</div>
   </div>`;
 }
 
@@ -343,13 +348,18 @@ function bindLazyFolds(ch) {
 }
 
 // ------------------------------------------------- phrase / ruby rendering --
-/** First reading for a column at each position: [{ch, r}] (r null when none). */
-function perChar(list, ents, colId) {
+const MIN_LANGS = new Set(["Hokkien", "Teochew"]);
+/** First reading for a column at each position: [{ch, r}] (r null when none).
+ *  With `literary`, Hokkien/Teochew take the literary (文讀) reading where
+ *  one is marked, as classical poems are recited. */
+function perChar(list, ents, colId, { literary = false } = {}) {
   const k = D.colIdx(colId);
   const ctx = colId === "Mandarin" ? wordReadings(list, ents) : [];
+  const lit = literary && MIN_LANGS.has(colId);
   return list.map((ch, i) => {
     const e = ents[i];
-    let r = e ? (e.v?.[k]?.[0] || e.i?.[k]?.[0] || null) : null;
+    const rs = e?.v?.[k] || [];
+    let r = e ? ((lit && rs.find((x) => x.k === "l")) || rs[0] || e.i?.[k]?.[0] || null) : null;
     if (ctx[i]) r = (e?.v?.[k] || []).find((x) => x.t === ctx[i]) || { t: ctx[i] };
     return { ch, r, han: D.isHan(ch) };
   });
@@ -407,16 +417,16 @@ function lineAudio(colId, cells, text) {
     const t = han.map((c) => c.r?.t).filter(Boolean).join(" ");
     return t ? ttsBtn(t, tts, { label: `Play in ${langName(colId)}` }) : "";
   }
-  if (colId === "Hokkien") {
-    const tl = han.map((c) => (c.r?.a || "").startsWith("h:") ? c.r.a.slice(2) : "").filter(Boolean);
-    return tl.length ? urlBtn(A.ithuanUrl(tl.join("-")), { label: "Play in Taiwanese Hokkien" }) : "";
-  }
-  if (colId === "Teochew") {
+  if (MIN_LANGS.has(colId)) {
+    // one syllable at a time, citation tone: no tone sandhi (see MIN_NOTE)
     const urls = han.map((c) => A.keyUrl(c.r?.a)).filter(Boolean);
-    return urls.length ? urlBtn(urls, { label: "Play in Teochew (stitched recordings)" }) : "";
+    return urls.length ? urlBtn(urls, { gap: 180, label: `Play each syllable in ${langName(colId)} (citation tones, no sandhi)` }) : "";
   }
   return "";
 }
+
+/** Shown wherever Hokkien or Teochew is read as a phrase. */
+const MIN_NOTE = `<p class="min-note">Read syllable by syllable in citation tones. In connected speech Min tones change before another syllable (tone sandhi). The app doesn't model that, so a phrase sounds like a list of single syllables.</p>`;
 
 async function phraseView(text) {
   const list = D.chars(text.trim()).slice(0, 80);
@@ -430,7 +440,7 @@ async function phraseView(text) {
     const cells = perChar(list, ents, id);
     if (!cells.some((c) => c.r)) return "";
     const c = COL(id);
-    return `<div class="lang-line"><div class="head"><b>${esc(langName(id))}</b><span class="native">${esc(c?.native || "")}</span><span class="spacer"></span>${lineAudio(id, cells, text)}</div>${rubyLine(cells)}</div>`;
+    return `<div class="lang-line"><div class="head"><b>${esc(langName(id))}</b><span class="native">${esc(c?.native || "")}</span><span class="spacer"></span>${lineAudio(id, cells, text)}</div>${rubyLine(cells)}${MIN_LANGS.has(id) && list.length > 1 ? MIN_NOTE : ""}</div>`;
   }).join("");
   view.innerHTML = `<article class="fade-in">
     <div class="phrase-hero">${list.map((ch) => D.isHan(ch) ? `<a href="#/c/${enc(ch)}" class="han">${esc(ch)}</a>` : `<span class="han" style="font-size:40px;color:var(--muted)">${esc(ch)}</span>`).join("")}</div>
@@ -503,17 +513,22 @@ function langSelect(id, value) {
     `<option value="${esc(l)}" ${l === value ? "selected" : ""}>${esc(langName(l))}${COL(l)?.audio || ["Hokkien", "Teochew"].includes(l) ? "  🔊" : ""}</option>`).join("")}</select>`;
 }
 
-async function renderReading(text, lang, out, { big = false } = {}) {
+async function renderReading(text, lang, out, { big = false, literary = false } = {}) {
   const sentences = (text.match(SENT_RE) || []).map((s) => s.trim()).filter(Boolean);
   const all = [...new Set(D.chars(text).filter(D.isHan))];
   out.innerHTML = `<div class="loading"><span class="spinner"></span>Reading ${all.length} characters…</div>`;
   const ents = await D.entries(all);
   const E = Object.fromEntries(all.map((c, i) => [c, ents[i]]));
-  out.innerHTML = sentences.map((s) => {
+  const html = sentences.map((s) => {
     const list = D.chars(s);
-    const cells = perChar(list, list.map((c) => E[c] || null), lang);
+    const cells = perChar(list, list.map((c) => E[c] || null), lang, { literary });
     return `<div class="sentence"><div class="${big ? "big-ruby" : ""}">${rubyLine(cells, { clauses: big })}</div><div>${lineAudio(lang, cells, s)}</div></div>`;
-  }).join("") || `<div class="empty">Paste or type some Chinese text above.</div>`;
+  }).join("");
+  const note = !MIN_LANGS.has(lang) ? ""
+    : `<div class="sentence min">${literary
+        ? MIN_NOTE.replace("</p>", " Literary (文讀) readings are used where known, as classical poems are recited.</p>")
+        : MIN_NOTE}</div>`;
+  out.innerHTML = html ? note + html : `<div class="empty">Paste or type some Chinese text above.</div>`;
 }
 
 async function readView() {
@@ -600,7 +615,7 @@ async function poemView(id) {
     ${footer()}
   </article>`;
   const out = $("#pm-out"), sel = $("#pm-lang");
-  const go = () => { settings.readLang = sel.value; saveSettings(); renderReading(p.lines.join("\n"), sel.value, out, { big: true }); };
+  const go = () => { settings.readLang = sel.value; saveSettings(); renderReading(p.lines.join("\n"), sel.value, out, { big: true, literary: true }); };
   sel.addEventListener("change", go);
   $("#recite").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-r]"); if (!b) return;
@@ -643,7 +658,7 @@ async function savedView() {
     <section class="section"><div class="section-head"><h2>About</h2></div>
     <div class="card pad note">
       <p style="margin-top:0"><b>漢字音庫</b> brings together the pronunciations of ${D.meta().chars.toLocaleString()} Chinese characters across ${langs.length} Sinitic varieties, ${Object.keys(D.cols().reduce((a, c) => (c.section === "local" ? (a[c.id] = 1, a) : a), {})).length} local dialect points, Middle and Old Chinese, and Japanese, Korean and Vietnamese.</p>
-      <p>Readings come from Unihan, Wiktionary, kaikki.org, MCPDict (漢字音典), Baxter–Sagart, ytenx and qieyun-data. Readings marked <span class="badge-ml">ML</span> are predicted by a model, not attested. Teochew audio is from <a href="https://www.mogher.com" target="_blank" rel="noopener">mogher.com</a>; Taiwanese Hokkien from <a href="https://ithuan.tw" target="_blank" rel="noopener">ithuan.tw</a>; other voices are your device's own.</p>
+      <p>Readings come from Unihan, Wiktionary, kaikki.org, MCPDict (漢字音典), Baxter–Sagart, ytenx and qieyun-data. Readings marked <span class="badge-ml">ML</span> are predicted by a model, not attested. Hokkien readings are Taiwanese and Teochew readings are Swatow (Shantou), from Wiktionary's place-tagged readings, with dialect surveys for characters it lacks. Teochew audio is from <a href="https://www.mogher.com" target="_blank" rel="noopener">mogher.com</a>, recorded by a Chaozhou-city speaker, so a few vowels differ from Swatow (Chaozhou -iêng / -uêng for Swatow -iang / -uang). Taiwanese Hokkien audio is ithuan.tw's <a href="https://ithuan.tw" target="_blank" rel="noopener">SuiSiann</a> voice. Both play one syllable at a time in citation tone: tone sandhi isn't applied. Other voices are your device's own.</p>
       <p style="margin-bottom:0">Data built ${esc(D.meta().built)} · <a href="https://github.com/zzz9269/hanzi-sound-library" target="_blank" rel="noopener">Source code and data credits</a></p>
     </div></section>
   </div>`;
