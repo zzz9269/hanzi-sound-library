@@ -10,7 +10,7 @@
 // they mark where branches part, not a language with recorded forms.
 // Japanese, Korean and Vietnamese readings are borrowings, drawn dashed.
 import * as D from "./data.js";
-import { mergeForms } from "./notation.js";
+import { mergeForms, tangReadings } from "./notation.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -217,7 +217,9 @@ function readings(e, node) {
   node.cols?.forEach((c, i) => {
     const k = D.colIdx(c);
     // scholarly notes in parentheses stay out of the small boxes
-    const rs = mergeForms(e.v?.[k] || e.i?.[k] || []).map((r) => ({ ...r, t: r.form })).slice(0, c === "Japanese On" ? 3 : 2);
+    let raw = e.v?.[k] || e.i?.[k] || [];
+    if (c === "Tang") raw = tangReadings(raw).map((r) => ({ ...r, t: r.form }));
+    const rs = mergeForms(raw).map((r) => ({ ...r, t: r.form })).slice(0, c === "Japanese On" ? 3 : 2);
     if (rs.length) out.push({ tag: node.tags?.[i] || "", rs });
   });
   if (node.id === "sk" && out.length === 2) {          // 천 (chen)

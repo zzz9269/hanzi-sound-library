@@ -304,7 +304,14 @@ function histRows(e) {
       `<div class="readings">${fq.map((r) => `<span class="han" style="font-size:19px">${esc(r.t)}</span>`).join('<span class="muted">·</span>')}</div>${how}`));
   }
   const tang = g("Tang");
-  if (tang.length) out.push(rowHTML(COL("Tang"), e));
+  if (tang.length) {
+    // Unihan lists a reading both with and without Stimson's * (common in
+    // Tang poetry): show it once, starred
+    const rs = N.tangReadings(tang);
+    const c = COL("Tang");
+    out.push(simpleRow(c.label, c.native, "Stimson's spelling (1976)",
+      `<div class="readings">${rs.map((r) => reconHTML(r, "tang")).join("")}</div>` + symbolsFold([["tang", "", rs]])));
+  }
   return out.join("");
 }
 const confColor = (c) => (c >= 0.8 ? "#3f9a5a" : c >= 0.6 ? "#c08a24" : "#c4574a");

@@ -108,6 +108,7 @@ function tokenize(s) {
 
 /** Analyse one form. Returns { respell, parts: [[symbol, explanation]] }. */
 export function analyse(form, sys) {
+  if (sys === "tang") return analyseTang(form);
   const toks = tokenize(form);
   const parts = [], seen = new Set();
   const add = (sym, txt) => { const k = sym + "|" + txt; if (!seen.has(k)) { seen.add(k); parts.push([sym, txt]); } };
@@ -221,4 +222,101 @@ export function analyse(form, sys) {
   return { respell: out + (tags.length ? ` · ${tags.join(", ")}` : ""), parts };
 }
 
-export const SYSTEM_NAME = { bs: "Baxter–Sagart", zz: "Zhengzhang", mc: "Middle Chinese (Baxter, IPA)", pm: "Proto-Min" };
+// ---------------------------------------------------------------- Tang --
+// Stimson's Late Middle Chinese spelling (T'ang Poetic Vocabulary, 1976, as
+// given in Unihan kTang). It is pinyin-like: b d g are PLAIN (unaspirated)
+// p t k, p t k carry a puff of air, and bh dh gh are the voiced (濁) initials.
+// Each initial's Middle Chinese value was checked against the 音韻地位 of the
+// characters in this dataset. [spelling, respelling, explanation]
+const TANG_INI = [
+  ["jrh", "jr", "a voiced j with the tongue tip curled back (Middle Chinese 崇 initial)"],
+  ["jh", "j", "a voiced j, as in “jeep” (Middle Chinese 船 initial)"],
+  ["dzh", "dz", "dz, voiced (Middle Chinese 從 initial)"],
+  ["djh", "d", "a voiced d with the tongue tip curled back (Middle Chinese 澄 initial)"],
+  ["bh", "b", "a voiced b (Middle Chinese 並 initial); Stimson writes voiced sounds with h"],
+  ["dh", "d", "a voiced d (Middle Chinese 定 initial)"],
+  ["gh", "g", "a voiced g (Middle Chinese 羣 initial)"],
+  ["dj", "t", "a plain t with the tongue tip curled back (Middle Chinese 知 initial)"],
+  ["tj", "th", "an aspirated t with the tongue tip curled back (Middle Chinese 徹 initial)"],
+  ["tz", "ts", "ts as in “cats”, no puff of air (Middle Chinese 精 initial)"],
+  ["ts", "tsh", "ts with a puff of air (Middle Chinese 清 initial)"],
+  ["ch", "chh", "ch with a puff of air (Middle Chinese 昌 / 初 initials)"],
+  ["zh", "zh", "a voiced sh, like the s in “measure” (Middle Chinese 常 initial)"],
+  ["sh", "sh", "sh as in “she” (Middle Chinese 書 / 生 initials)"],
+  ["nj", "ny", "ny as in “canyon” (Middle Chinese 日 initial)"],
+  ["ng", "ng", "ng as in “sing”, here at the start of a syllable (Middle Chinese 疑 initial)"],
+  ["b", "p", "a plain p, no puff of air (Middle Chinese 幫 initial); Stimson spells it b, as pinyin does"],
+  ["p", "ph", "p with a puff of air (Middle Chinese 滂 initial)"],
+  ["d", "t", "a plain t, no puff of air (Middle Chinese 端 initial); spelt d, as in pinyin"],
+  ["t", "th", "t with a puff of air (Middle Chinese 透 initial)"],
+  ["g", "k", "a plain k, no puff of air (Middle Chinese 見 initial); spelt g, as in pinyin"],
+  ["k", "kh", "k with a puff of air (Middle Chinese 溪 initial)"],
+  ["j", "ch", "a plain ch, no puff of air (Middle Chinese 章 / 莊 initials); spelt j, as in pinyin"],
+  ["q", "'", "a glottal stop, the catch in “uh-oh” (Middle Chinese 影 initial)"],
+  ["x", "kh", "the rasping ch of Scottish “loch” (Middle Chinese 曉 initial)"],
+  ["h", "h", "a voiced, breathy h (Middle Chinese 匣 / 云 initials)"],
+  ["z", "z", "z as in “zoo” (Middle Chinese 邪 initial)"],
+  ["s", "s", "s as in “see”"],
+  ["m", "m", "m as in “me”"],
+  ["n", "n", "n as in “no”"],
+  ["l", "l", "l as in “leaf”"],
+];
+const TANG_V = {
+  a: ["a", "a as in “father”"], "ɑ": ["ah", "a far back in the mouth, as in “spa”"],
+  "æ": ["a", "a as in “cat”"], "ɛ": ["eh", "e as in “bed”"], E: ["eh", "an e-type vowel (Stimson's E)"],
+  e: ["e", "e as in “bed”, a little closer (like French é)"], "ə": ["uh", "uh, the vowel in “about”"],
+  i: ["ee", "ee as in “see”"], o: ["o", "a pure o, as in “go”"], u: ["oo", "oo as in “food”"],
+};
+const TANG_TONE = { "\u0300": ["̀", "a grave accent marks the departing tone (去聲)"],
+                    "\u030C": ["̌", "a caron marks the rising tone (上聲)"] };
+
+/** Unihan kTang can hold several space-separated readings, and lists a
+ *  reading both with and without Stimson's * ("*qit qit"): split them, and
+ *  show each reading once (starred if any copy is). */
+export function tangReadings(rs) {
+  const all = rs.flatMap((r) => r.t.split(/\s+/).filter(Boolean).map((t) => ({ ...r, t })));
+  const starred = new Set(all.filter((r) => r.t.startsWith("*")).map((r) => r.t.slice(1)));
+  return mergeForms(all.filter((r) => r.t.startsWith("*") || !starred.has(r.t)));
+}
+
+function analyseTang(form) {
+  const parts = [], seen = new Set();
+  const add = (sym, txt) => { const k = sym + "|" + txt; if (!seen.has(k)) { seen.add(k); parts.push([sym, txt]); } };
+  let s = form.trim().normalize("NFD"), out = "", tone = "";
+  if (s.startsWith("*")) {
+    add("*", "Stimson's mark for a reading that is common in Tang poetry; here it does not mean “reconstructed”");
+    s = s.slice(1);
+  }
+  const ini = TANG_INI.find(([sp]) => s.startsWith(sp) && !(sp === "ts" && s.startsWith("tsh")));
+  if (ini) {
+    add(ini[0], ini[2]); out += ini[1]; s = s.slice(ini[0].length);
+    if (s.startsWith("r")) {        // shr, jr, chr…: the retroflex 莊 series
+      add(ini[0] + "r", "r after the consonant: the tongue tip curled back (retroflex; Middle Chinese 莊 series)");
+      out += "r"; s = s.slice(1);
+    }
+  }
+  else if (/^[aɑæɛEeəiou]/.test(s)) add("(none)", "no initial consonant (Middle Chinese 以 initial, a y- sound)");
+  let sawV = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (TANG_TONE[c]) { tone = c; add(...TANG_TONE[c]); continue; }
+    if (c === "(" ) { const j = s.indexOf(")", i); add(s.slice(i, j + 1).normalize("NFC"), "may or may not have been present"); i = j; continue; }
+    if (c === "y" || ((c === "i" || c === "u") && !sawV && /[aɑæɛEeəiou]/.test(s[i + 1] || "") && s[i + 1] !== c)) {
+      add(c === "y" ? "y" : `${c}-`, `a short glide (${c === "u" ? "w" : "y"}) before the main vowel`);
+      out += c === "u" ? "w" : "y"; continue;
+    }
+    const v = TANG_V[c];
+    if (v) { sawV = true; add(c, v[1]); out += v[0]; continue; }
+    const rest = s.slice(i);
+    if (rest.startsWith("ng")) { add("-ng", "a final ng as in “sing”"); out += "ng"; i++; continue; }
+    if ("ptk".includes(c)) { add(`-${c}`, `a final ${c}, unreleased (like the k in “book” said without letting go): the entering tone (入聲)`); out += c; continue; }
+    if ("nm".includes(c)) { add(`-${c}`, `a final ${c}`); out += c; continue; }
+    out += c;
+  }
+  // a vowel ending in i / u after the main vowel is a glide: respell -y / -w
+  out = out.replace(/(a|ah|eh|e|uh|o)ee$/, "$1y").replace(/(a|ah|eh|e|uh|ee)oo$/, "$1w").replace(/ooo$/, "ou");
+  if (!tone && !/[ptk]$/.test(out)) add("(no mark)", "no tone mark: the level tone (平聲)");
+  return { respell: out + (tone ? ` · ${tone === "\u0300" ? "falling" : "rising"}` : ""), parts };
+}
+
+export const SYSTEM_NAME = { bs: "Baxter–Sagart", zz: "Zhengzhang", mc: "Middle Chinese (Baxter, IPA)", pm: "Proto-Min", tang: "Stimson (Tang)" };
