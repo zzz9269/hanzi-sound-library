@@ -1,6 +1,7 @@
 import * as D from "./data.js";
 import * as A from "./audio.js";
 import * as W from "./wikt.js";
+import * as T from "./tree.js";
 
 // ---------------------------------------------------------------- helpers --
 const $ = (s, r = document) => r.querySelector(s);
@@ -20,7 +21,7 @@ const ICON = {
 };
 
 let settings = Object.assign(
-  { theme: "auto", ipa: true, en: true, hidden: [], readLang: "Mandarin" },
+  { theme: "auto", ipa: true, en: true, hidden: [], readLang: "Mandarin", view: "list" },
   D.store.get("settings", {}));
 function saveSettings() { D.store.set("settings", settings); applySettings(); }
 function applySettings() {
@@ -281,6 +282,17 @@ async function charView(ch) {
       </div>
     </div>
 
+    <div class="view-toggle" role="group" aria-label="Layout">
+      <div class="seg" id="view-toggle">${[["list", "Readings"], ["tree", "Family tree"]].map(([v, t]) =>
+        `<button data-v="${v}" class="${(settings.view === "tree") === (v === "tree") ? "on" : ""}" aria-pressed="${(settings.view === "tree") === (v === "tree")}">${t}</button>`).join("")}</div>
+    </div>
+
+    <section class="section" id="rd-tree" ${settings.view === "tree" ? "" : "hidden"}>
+      <div class="section-head"><h2>How the readings evolved</h2><span class="han">語音演變</span></div>
+      <div class="card tree-card">${T.treeHTML(e, ch)}</div>
+    </section>
+
+    <div id="rd-list" ${settings.view === "tree" ? "hidden" : ""}>
     ${shownRows.length ? `<section class="section"><div class="section-head"><h2>Spoken today</h2><span class="han">現代漢語方言</span><span class="spacer"></span><span class="muted" style="font-size:12.5px">${shownRows.length} varieties</span></div>
       <div class="card rows two">${shownRows.join("")}</div>
       ${hiddenRows.length ? `<details class="fold card" style="margin-top:10px"><summary><span>${hiddenRows.length} more ${hiddenRows.length === 1 ? "variety" : "varieties"}</span><span class="chev">${ICON.chev}</span></summary><div class="fold-body rows two">${hiddenRows.join("")}</div></details>` : ""}
@@ -289,6 +301,7 @@ async function charView(ch) {
     ${sino ? `<section class="section"><div class="section-head"><h2>Across East Asia</h2><span class="han">漢字文化圈</span></div><div class="card rows two">${sino}</div></section>` : ""}
 
     ${hist ? `<section class="section"><div class="section-head"><h2>Through history</h2><span class="han">歷史音韻</span></div><div class="card rows">${hist}</div></section>` : ""}
+    </div>
 
     <section class="section">
       ${localityHTML(e)}
@@ -310,6 +323,16 @@ async function charView(ch) {
   };
   if ($("#share-btn")) $("#share-btn").onclick = () =>
     navigator.share({ title: `${ch} · 漢字音庫`, text: `${ch} ${man[0]?.t || ""} — ${e.d || ""}`, url: location.href }).catch(() => {});
+  T.bindTree($("#rd-tree"), e);
+  $$("#view-toggle button").forEach((b) => b.addEventListener("click", () => {
+    settings.view = b.dataset.v; saveSettings();
+    const tree = settings.view === "tree";
+    $$("#view-toggle button").forEach((x) => {
+      const on = (x.dataset.v === "tree") === tree;
+      x.classList.toggle("on", on); x.setAttribute("aria-pressed", on);
+    });
+    $("#rd-tree").hidden = !tree; $("#rd-list").hidden = tree;
+  }));
   bindLazyFolds(ch);
 }
 

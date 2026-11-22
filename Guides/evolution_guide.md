@@ -1,61 +1,82 @@
 # Sound evolution & chronology
 
-The **🌳 Sound evolution tree** (in each character's lookup) shows how *one*
-character's pronunciation descended from Old Chinese to today. **Hover a
-branch node** to see the regular sound changes that produced that branch's form
-of this character (入聲 loss or retention, 全濁 devoicing, palatalisation, Min's
-pre-split archaisms, …) — derived from the character's Middle Chinese 音韻地位.
-This guide explains the family tree it's based on — and corrects a very common myth.
+Each character page in the web app has a **Readings | Family tree** switch.
+The **Family tree** shows how *one* character's pronunciation descended from
+Old Chinese (far left) to every modern variety (far right), with each branch
+hanging where it split off. **Tap any box** to see what that stage or variety
+is and which regular sound changes gave this character its form there (入聲
+loss or retention, 全濁 devoicing and aspiration, palatalisation, 輕脣化, Min's
+pre-split archaisms, Sino-Xenic tone correspondences, …), all derived from the
+character's Middle Chinese 音韻地位. Notes about Mandarin's palatalisation and
+w- are only shown when this character's Mandarin reading actually has them.
+
+This guide explains the family tree it's based on, and corrects a very common myth.
 
 ## ⚠️ The myth: "Old Chinese → Middle Chinese → Cantonese → Mandarin"
 
 This is **not** how it works. Cantonese is **not** the ancestor of Mandarin, and
-neither descends from the other. The modern Chinese varieties are **cousins** —
-they all branch off from **Middle Chinese** at roughly the same point, like the
-Romance languages branching off Latin. (Cantonese keeps some older features that
-Mandarin lost, which is why it *feels* "older" — but older-sounding ≠ ancestor.)
+neither descends from the other. The modern Chinese varieties are **cousins**:
+all except Min descend from Late Middle Chinese and split from each other in
+the last thousand years or so, like the Romance languages branching off Latin.
+(Cantonese keeps some older features that Mandarin lost, which is why it *feels*
+"older"; but older-sounding ≠ ancestor.)
 
-## The real (simplified) family tree
+## The family tree
+
+The shape follows the mainstream classification (Norman 1988 *Chinese*; Li Rong
+and the *Language Atlas of China*). Boxes without a reading are **groups**: they
+mark where branches part, not a language with recorded forms.
 
 ```
-Old Chinese  (~1000 BCE, Zhou dynasty)
+Old Chinese 上古漢語  (Zhou, reconstructions target ~1000 BCE)
 │
-├─ proto-Min ── splits off EARLY (around the Han, before Middle Chinese)
-│     └─ Hokkien · Teochew · Eastern Min (Fuzhou) · Northern Min · Hainanese
+├─ Proto-Min 原始閩語 ── split c. Han, BEFORE the Qieyun
+│    ├─ Coastal Min
+│    │    ├─ Southern Min 閩南 ── Taiwanese Hokkien · Teochew (Swatow) · Hainanese
+│    │    └─ Eastern Min (Fuzhou)
+│    └─ Inland Min ── Northern Min (Jian'ou)
 │
-└─ Middle Chinese  (~600 CE, codified in the Qieyun 切韻, 601)
-      │   └─ Tang koine (618–907 CE)
-      │
-      ├─ Mandarin · Jin              (northern)
-      ├─ Cantonese (Yue) · Hakka     (southern)
-      ├─ Wu · Hui                    (central/eastern)
-      ├─ Gan · Xiang                 (central)
-      │
-      └─ (borrowed OUT, not descended):
-            Sino-Japanese on'yomi   ~7–9th c.  (Tang loans; + older Go-on)
-            Sino-Korean             ~Tang
-            Sino-Vietnamese         ~late Tang (8–9th c.)
+└─ Early Middle Chinese 中古漢語  (Qieyun 切韻, 601 CE)
+     └─ Late Middle Chinese  (Tang Chang'an, 8th–10th c.)
+          ├─ Northern Chinese ── Mandarin (via Early Mandarin, 中原音韻 1324) · Jin
+          ├─ Wu · Hui · Xiang · Cantonese
+          ├─ Hakka–Gan ── Gan · Hakka
+          ├┄ Southern Min literary layer 文讀 (borrowed, dotted line)
+          └┄ borrowed OUT, not descended (dashed):
+               Sino-Japanese on'yomi   go-on 5–6th c. · kan-on 7–9th c.
+               Sino-Korean             c. 8–10th c.
+               Sino-Vietnamese         c. 9–10th c.
 ```
 
-Two things make this tree "non-obvious":
+Things that make this tree "non-obvious":
 
-1. **Min split early.** Min preserves features from *before* Middle Chinese, so it
-   doesn't descend cleanly from the Qieyun. (Its *literary* readings were later
-   borrowed from Middle Chinese, but its *colloquial* layer is older — which is
-   why Min characters often have two very different readings.)
-2. **Japanese / Korean / Vietnamese didn't *inherit* these readings — they
-   *borrowed* them** (shown as dashed lines). They're snapshots of how Chinese
-   sounded at the moment of borrowing, frozen in a foreign language. That's why a
-   Tang-era loan in Japanese can preserve a final *-t/-k* that modern Mandarin
-   dropped.
+1. **Min split early.** Min preserves distinctions from *before* Middle Chinese
+   (知 read as t-, no f-), so it does not descend from the Qieyun. Its *literary*
+   readings were later borrowed from the Tang–Song standard (the dotted line),
+   while its *colloquial* layer is inherited, which is why Min characters often
+   have two very different readings (白讀 vs 文讀).
+2. **Late Middle Chinese innovations are shared by everyone else.** For example
+   輕脣化 (p- → f- before certain rimes) and the 知 series becoming affricates
+   are found in every non-Min variety, so they come from a common Tang ancestor.
+3. **Hakka and Gan** share a signature change (MC voiced stops became aspirated
+   in every tone), so they are grouped; **Mandarin and Jin** share the Northern
+   developments, Jin being set apart mainly by keeping the entering tone.
+4. **Japanese / Korean / Vietnamese didn't *inherit* these readings; they
+   *borrowed* them** (dashed lines). They're snapshots of how Chinese sounded at
+   the moment of borrowing, frozen in a foreign language. That's why a Tang-era
+   loan in Japanese can preserve a final *-t/-k* that modern Mandarin dropped.
 
 ## The time periods
 
+The tree's columns are rough periods (Zhou · Han–Sui · Tang · Song–Yuan ·
+today); the dates of the group splits are approximate.
+
 | Stage | When | Notes |
 |---|---|---|
-| **Old Chinese** 上古 | Shang–Han, reconstructions target **~1000 BCE** | Oracle bones (~1250 BCE) to ~220 CE. Had consonant clusters, no tones yet. |
-| **Middle Chinese** 中古 | **~600 CE** | The *Qieyun* rhyme dictionary (601 CE) is the anchor. The "pivot" of the whole system. |
-| **Tang koine** | **618–907 CE** | The prestige speech of the Tang capital; source of most Sino-Xenic loans. |
+| **Old Chinese** 上古 | Shang–Han, reconstructions target **~1000 BCE** | Two leading systems shown: Zhengzhang (2003) and Baxter–Sagart (2014). Had consonant clusters, no tones yet. |
+| **Proto-Min** | split **c. Han** | Reconstructed by this project from the Min daughters (comparative method). |
+| **Early Middle Chinese** 中古 | **601 CE** | The *Qieyun* rhyme dictionary is the anchor; readings in Baxter's transcription. |
+| **Late Middle Chinese** | **Tang, 8th–10th c.** | The prestige speech of Chang'an; source of most Sino-Xenic loans. Reading: Stimson (1976, via Unihan) where one exists. |
 | **Modern branches** | crystallised over the **last ~1000 years** | Diverged through the Song–Yuan–Ming as regions developed separately. |
 
 ## How tones arose (tonogenesis)
@@ -73,30 +94,33 @@ initial was voiced), which is why Cantonese has 6–9 tones, Mandarin 4, etc.
 
 ## What's on the tree (and what isn't)
 
-**On it** — everything whose pronunciation actually *descends from* or was
-*borrowed from* Chinese: the reconstructions (Old Chinese, Middle Chinese, Tang),
-all 13 modern Sinitic branches (with their individual localities as small grey
-leaves), and the three Sino-Xenic loan traditions (Japanese *on'yomi*,
-Sino-Korean, Sino-Vietnamese).
+**On it**: everything whose pronunciation actually *descends from* or was
+*borrowed from* Chinese: the reconstructions (Old Chinese, Proto-Min, Early and
+Late Middle Chinese), the modern Sinitic varieties the app covers, and the three
+Sino-Xenic loan traditions (Japanese *on'yomi*, Sino-Korean, Sino-Vietnamese).
+Varieties with no recorded reading for a character are left off for that
+character. Puxian, Pinghua, Leizhou and others are not shown.
 
-**Deliberately off it** — readings that use the character but are **native
+**Deliberately off it**: readings that use the character but are **native
 words**, not Chinese-derived, so they have no place on a *sound-evolution* tree:
 
-* **Japanese *kun'yomi*** (天 = *ame/sora* "sky") — native Japanese.
-* **Okinawan** (血 = *chī*) — native Ryukyuan.
-* **Zhuang** (Sawndip) — native Tai; many Zhuang characters have no Chinese
+* **Japanese *kun'yomi*** (天 = *ame/sora* "sky"): native Japanese.
+* **Okinawan** (血 = *chī*): native Ryukyuan.
+* **Zhuang** (Sawndip): native Tai; many Zhuang characters have no Chinese
   reading at all.
 
 ## Reading the tree in the app
 
-* Left → right is **time**. Each box shows the variety, its reading «in guillemets»,
-  and the era.
-* **Solid** arrows = direct descent; **dashed** = borrowing into another language.
-* Colours: red = Old Chinese, brown/olive = Middle Chinese/Tang, **teal = Min**
-  (the early branch), blue = northern (Mandarin/Jin), green = other Sinitic,
-  purple = the Sino-Xenic loans.
+* Left → right is **time**. Each box shows the variety, its reading(s) and, for
+  stages, the era. 白 / 文 mark vernacular and literary readings; **ML** marks a
+  machine-predicted reading.
+* **Solid** lines = direct descent; **dashed** = borrowing into another
+  language; **dotted** = the Southern Min literary layer.
+* Colours: red = Old Chinese, amber = Middle Chinese, **jade = Min** (the early
+  branch), blue = Northern (Mandarin/Jin), grey = other branches, purple = the
+  Sino-Xenic loans.
 
 > This is a deliberately **simplified** tree for one character. Real Sinitic
-> classification is debated (e.g. exactly how Min, Pinghua and the others group),
+> classification is debated (e.g. where Hui and Jin belong, how Pinghua groups),
 > and every branch also absorbed later waves of borrowing from the standard
 > language. Treat it as a teaching aid, not the last word.
