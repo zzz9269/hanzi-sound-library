@@ -9,8 +9,8 @@ the `hanzihub` package. There are two front-ends:
 
 - **The web app** (`web/`): a fast, installable app that runs entirely in
   the browser. **Open it at <https://zzz9269.github.io/hanzi-sound-library/>.**
-- **The Streamlit workbench** (`app.py`): the original research UI with
-  quizzes, review, progress tracking and the guides.
+- **The Streamlit workbench** (`app.py`): the original research UI, with
+  the guides and the Sinitic paper.
 
 ## Use it on your phone
 
@@ -64,9 +64,7 @@ The Streamlit app can also run on a free
    It then launches full-screen like an app.
 
 Keep the app's sharing setting **private** (only you) if Google credentials
-are configured, so nobody else can spend your TTS/translation quota. Note the
-hosted filesystem is ephemeral: the 📊 Progress / 🔄 Review study history
-(`cache/progress.db`) resets whenever Streamlit restarts the app.
+are configured, so nobody else can spend your TTS/translation quota.
 
 The committed `data/out/*.parquet` files *are* the dataset — the hosted app
 needs no build step.
@@ -87,8 +85,7 @@ Cantonese / Japanese / Korean / Vietnamese; ithuan.tw for Taiwanese Hokkien;
 mogher.com recordings for Teochew, both syllable by syllable in citation
 tones), a **glyph-origin** panel,
 the full Wiktionary entry, a 📖 passage reader with per-word ruby readings in
-any variety, a 🎋 classical-poetry library with recite mode, and quiz /
-spaced-repetition review.
+any variety, and a 🎋 classical-poetry library with recite mode.
 
 Notable engine features:
 
@@ -185,7 +182,7 @@ hanzihub/
   reconstruct.py  comparative Proto-Min reconstruction
   impute.py       gated ML imputation (calibrated, abstains when unsure)
   build_dataset.py  CLI orchestrator
-  appkit.py / scrapers.py / reading.py / progress.py   app logic
+  appkit.py / scrapers.py / reading.py   app logic
 data/raw/         source caches (committed, small)
 data/out/         build outputs (parquet committed; CSV local only)
 Guides/           in-app guides

@@ -22,7 +22,6 @@ from hanzihub import scrapers as sc
 from hanzihub import soundlaws
 from hanzihub import paths
 from hanzihub import reading as rd
-from hanzihub import progress as pg
 
 st.set_page_config(page_title="漢字音庫 — Hanzi Sound Library", layout="wide")
 
@@ -1397,11 +1396,6 @@ def _passage_reading(dialect, sent, trad, literary=False):
     return ak.per_char_tokens(DATA, dialect, sent, trad)
 
 
-# Familiarity → glyph colour in the reader (green known, orange weak/looked-up,
-# default not-yet-seen), mirroring the old atcre colour code.
-_STATE_COLOR = {"known": "#6fb96f", "weak": "#e0a86b", "unknown": "#e8e8e8"}
-
-
 def _read_tone(tok, dialect):
     """Tone display for the reader: Mandarin and Cantonese keep their own
     romanisation standard (pinyin diacritics, jyutping tone numbers); every other
@@ -1412,12 +1406,12 @@ def _read_tone(tok, dialect):
     return ak.tones_to_chao(tok, dialect)
 
 
-def _char_hover(ch, state, word="", wgloss=""):
+def _char_hover(ch, word="", wgloss=""):
     """Hover tooltip for a reader glyph. When the glyph is part of a multi-character
     word, the compound's meaning leads (飛機 → 'airplane'), so you don't just see the
     characters' individual senses; then the character itself + its Mandarin pinyin +
-    its own definition (Unihan gloss, the same senses Wiktionary lists), its
-    familiarity and a click hint. Instant (no per-character network fetch)."""
+    its own definition (Unihan gloss, the same senses Wiktionary lists) and a
+    click hint. Instant (no per-character network fetch)."""
     d = DATA.get(ch, {})
     lines = []
     if word and len(word) >= 2 and wgloss:
@@ -1430,15 +1424,15 @@ def _char_hover(ch, state, word="", wgloss=""):
     defn = (d.get("Definition") or "").strip()
     if defn:
         lines.append(defn)
-    lines.append(f"({state} — click to open full entry)")
+    lines.append("(click to open full entry)")
     return "\n".join(lines)
 
 
-def _ruby_cell(ch, tok, dialect, state="unknown", word="", wgloss=""):
-    """One stacked character: the glyph (a link that drills into its full entry,
-    coloured by how well you know it) above its reading. Unresolved chars dimmed."""
-    gcol = _STATE_COLOR.get(state, "#e8e8e8")
-    link = (f"<a href='?q={quote(ch)}' title='{_html.escape(_char_hover(ch, state, word, wgloss))}' "
+def _ruby_cell(ch, tok, dialect, word="", wgloss=""):
+    """One stacked character: the glyph (a link that drills into its full entry)
+    above its reading. Unresolved chars dimmed."""
+    gcol = "#e8e8e8"
+    link = (f"<a href='?q={quote(ch)}' title='{_html.escape(_char_hover(ch, word, wgloss))}' "
             f"style='font-size:1.5em;text-decoration:none;color:{gcol}'>"
             f"{_html.escape(ch)}</a>")
     if tok:
@@ -1452,10 +1446,9 @@ def _ruby_cell(ch, tok, dialect, state="unknown", word="", wgloss=""):
             f"margin:0 1px;vertical-align:top;line-height:1.15'>{link}{rspan}</span>")
 
 
-def _ruby_html(words, char_reads, dialect, states=None):
+def _ruby_html(words, char_reads, dialect):
     """Assemble one sentence as word-grouped ruby: each word underlined as a unit,
     every Hanzi stacked over its reading; punctuation passes through inline."""
-    states = states or {}
     out, idx = [], 0
     for w in words:
         wgloss = rd.word_gloss(w) if rd.has_hanzi(w) else ""   # 飛機 → 'airplane'
@@ -1465,8 +1458,7 @@ def _ruby_html(words, char_reads, dialect, states=None):
             _, tok = char_reads[idx] if idx < len(char_reads) else (ch, None)
             idx += 1
             if rd.has_hanzi(ch):
-                cells.append(_ruby_cell(ch, tok, dialect, states.get(ch, "unknown"),
-                                        wlabel, wgloss))
+                cells.append(_ruby_cell(ch, tok, dialect, wlabel, wgloss))
             else:
                 cells.append("<span style='display:inline-block;font-size:1.3em;"
                              f"color:#9aa7bd;vertical-align:top'>{_html.escape(ch)}</span>")
@@ -1556,15 +1548,14 @@ def _read_language_ui(key: str):
     return dialect, literary
 
 
-def _render_reading_line(dialect: str, sent: str, states: dict, literary: bool):
+def _render_reading_line(dialect: str, sent: str, literary: bool):
     """Render one sentence/line the way both readers do: a ruby row (each glyph
-    over its reading, coloured by familiarity, clickable), the Min positional
-    "↳ spoken" sandhi line (or ≈English respelling for the toneless topolects),
-    and the 🔊 audio player where a voice exists."""
+    over its reading, clickable), the ≈English respelling, and the 🔊 audio
+    player where a voice exists (Min syllable by syllable, citation tones)."""
     trad = sent
     char_reads = _passage_reading(dialect, sent, trad, literary)
     md("<div style='margin:12px 0 2px;line-height:2.7'>"
-       + _ruby_html(rd.segment(sent), char_reads, dialect, states) + "</div>")
+       + _ruby_html(rd.segment(sent), char_reads, dialect) + "</div>")
     sandhi = ak.phrase_sandhi_html(char_reads, dialect)
     if sandhi:
         md(sandhi)
@@ -1618,13 +1609,11 @@ def render_reading_passage():
     dialect, literary = _read_language_ui("read")
 
     # Always read/show in Traditional, even when the passage was pasted in
-    # Simplified — convert once so glyphs, segmentation, familiarity, readings
+    # Simplified — convert once so glyphs, segmentation, readings
     # and audio all agree (s2t is a no-op on already-traditional text).
     text = ak.s2t_text(text)
-    # Colour every glyph by familiarity (one query for the whole passage).
-    states = pg.status_map([c for c in text if ak.looks_like_hanzi(c)])
     for sent in rd.sentences(text):
-        _render_reading_line(dialect, sent, states, literary)
+        _render_reading_line(dialect, sent, literary)
         st.divider()
 
 
@@ -1655,9 +1644,8 @@ def render_poems():
                "and the **蒙學** primers — so you can study poems in the app instead of "
                "hunting for them online. Pick one and read it word-by-word in any "
                "Sinitic language (readings, ≈English and 🔊 audio, exactly like the "
-               "📖 Read page). Turn on **🙈 Recite mode** to memorise it line by line. "
-               "The chosen poem also becomes your active passage, so **📝 Quiz** and "
-               "**🔄 Review** drill its characters.", unsafe_allow_html=True)
+               "📖 Read page). Turn on **🙈 Recite mode** to memorise it line by line.",
+               unsafe_allow_html=True)
 
     poems = rd.load_poems()
     if not poems:
@@ -1688,9 +1676,6 @@ def render_poems():
         format_func=lambda i: f"{pool[i]['title']} — {pool[i]['author']}")
     poem = pool[idx]
 
-    # Make the poem the active passage so 📝 Quiz / 🔄 Review work on it too.
-    st.session_state["passage"] = _poem_passage(poem)
-
     md(f"<h3 style='margin:.4em 0 0'>{_html.escape(poem['title'])}</h3>")
     meta = poem["author"]
     if poem["note"] and poem["note"] != poem["title"]:
@@ -1705,7 +1690,6 @@ def render_poems():
              "🔊 audio and check yourself.")
 
     text = ak.s2t_text(_poem_passage(poem))
-    states = pg.status_map([c for c in text if ak.looks_like_hanzi(c)])
     lines = rd.sentences(text)
 
     # Short poems render whole; the long 蒙學 primers (千字文 is 250 lines) are
@@ -1725,126 +1709,11 @@ def render_poems():
         st.caption("Recite each line from memory, then expand it to check.")
         for i, ln in enumerate(lines, offset + 1):
             with st.expander(f"{i}.　{_mask_line(ln)}"):
-                _render_reading_line(dialect, ln, states, literary)
+                _render_reading_line(dialect, ln, literary)
     else:
         for ln in lines:
-            _render_reading_line(dialect, ln, states, literary)
+            _render_reading_line(dialect, ln, literary)
             st.divider()
-
-
-# =====================================================================
-# Learning layer — quiz, spaced-repetition review, progress (merged from atcre,
-# now backed by hanzihub.progress and the multilingual DATA dictionary)
-# =====================================================================
-def _char_gloss(ch: str) -> str:
-    d = DATA.get(ch, {}).get("Definition", "")
-    return d.split(";")[0].strip()[:44] if d else ""
-
-
-def _new_quiz_question(pool):
-    import random
-    ch = random.choice(pool)
-    correct = _char_gloss(ch)
-    opts, seen = [correct], {correct}
-    others = [c for c in DATA if c != ch and DATA[c].get("Definition")]
-    random.shuffle(others)
-    for c in others:
-        g = _char_gloss(c)
-        if g and g not in seen:
-            seen.add(g); opts.append(g)
-        if len(opts) == 4:
-            break
-    random.shuffle(opts)
-    st.session_state["quiz"] = {"char": ch, "correct": correct, "opts": opts, "answered": None}
-
-
-def render_quiz():
-    st.subheader("📝 Quiz")
-    text = st.session_state.get("passage") or _SAMPLE_PASSAGE
-    pool = [c for c in dict.fromkeys(text) if ak.looks_like_hanzi(c) and _char_gloss(c)]
-    if not pool:
-        st.info("Open **📖 Read passages** and load or paste a passage first — the quiz "
-                "tests the characters in it."); return
-    focus = [c for c in pool if pg.status_map(pool).get(c) != "known"] or pool
-    st.caption(f"Pick the meaning. Drawing from {len(focus)} character(s) in your current "
-               "passage (weak/new first). Answers feed your review schedule.")
-    if "quiz" not in st.session_state or st.session_state["quiz"]["char"] not in DATA:
-        _new_quiz_question(focus)
-    q = st.session_state["quiz"]
-    md(f"<div style='font-size:4.5em;text-align:center;margin:.1em'>{_html.escape(q['char'])}</div>")
-    choice = st.radio("What does it mean?", q["opts"], index=None, key=f"quiz_{q['char']}",
-                      disabled=q["answered"] is not None)
-    c1, c2 = st.columns(2)
-    if c1.button("Submit", use_container_width=True, disabled=q["answered"] is not None):
-        if choice is None:
-            st.warning("Pick an option first.")
-        else:
-            q["answered"] = (choice == q["correct"])
-            pg.mark(q["char"], q["answered"])
-            st.rerun()
-    if c2.button("Skip →", use_container_width=True):
-        _new_quiz_question(focus); st.rerun()
-    if q["answered"] is not None:
-        if q["answered"]:
-            st.success(f"✓ Correct — {q['char']} = {q['correct']}")
-        else:
-            st.error(f"✗ {q['char']} = {q['correct']}")
-        if st.button("Next question", type="primary"):
-            _new_quiz_question(focus); st.rerun()
-
-
-def render_review():
-    st.subheader("🔄 Review — spaced repetition")
-    due = pg.review_queue(40)
-    if not due:
-        st.success("Nothing due for review. Read a passage (📖), look up characters, or come "
-                   "back once today's cards mature."); return
-    st.caption(f"{len(due)} character(s) due. Recall it, reveal, then grade yourself honestly — "
-               "a correct recall doubles its interval; a miss resets it to a day.")
-    ch = due[0]["char"]
-    md(f"<div style='font-size:4.5em;text-align:center;margin:.1em'>{_html.escape(ch)}</div>")
-    if st.session_state.get("rev_show") != ch:
-        if st.button("Show meaning & readings", type="primary"):
-            st.session_state["rev_show"] = ch; st.rerun()
-    else:
-        d = DATA.get(ch, {})
-        md(f"**Meaning:** {_html.escape((d.get('Definition','') or '(none)')[:140])}")
-        md(f"**Mandarin:** <code>{_html.escape(d.get('Mandarin',''))}</code> &nbsp; "
-           f"**Cantonese:** <code>{_html.escape(d.get('Cantonese',''))}</code>")
-        c1, c2 = st.columns(2)
-        if c1.button("✓ I knew it", use_container_width=True):
-            pg.mark(ch, True); st.session_state.pop("rev_show", None); st.rerun()
-        if c2.button("✗ I didn't", use_container_width=True):
-            pg.mark(ch, False); st.session_state.pop("rev_show", None); st.rerun()
-
-
-def render_progress():
-    st.subheader("📊 Progress")
-    s = pg.stats()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Known", s["known"])
-    c2.metric("Weak", s["weak"])
-    c3.metric("Seen (total)", s["total"])
-    c4.metric("Due now", s["due"])
-    rows = pg.all_chars()
-    if not rows:
-        st.info("No character history yet — read a passage (📖) and click characters, or take "
-                "a quiz (📝)."); return
-    weak = [r for r in rows if r["status"] == "weak"]
-    if weak:
-        st.markdown("**Weak-character spotlight** — click any to open its full entry")
-        strip = " ".join(f"<a href='?q={quote(r['char'])}' style='font-size:1.7em;"
-                         f"text-decoration:none;color:#e0a86b'>{_html.escape(r['char'])}</a>"
-                         for r in weak[:48])
-        md(f"<div style='line-height:2'>{strip}</div>")
-    with st.expander(f"All tracked characters ({len(rows)})"):
-        body = ["<tr><th>Char</th><th>Status</th><th>✓</th><th>✗</th></tr>"]
-        for r in rows:
-            body.append(f"<tr><td style='font-size:1.3em'>{_html.escape(r['char'])}</td>"
-                        f"<td>{r['status']}</td><td>{r['success_count']}</td>"
-                        f"<td>{r['error_count']}</td></tr>")
-        scraper_html("<table>" + "".join(body) + "</table>",
-                     height=min(520, 60 + len(rows) * 28))
 
 
 # =====================================================================
@@ -1906,17 +1775,14 @@ if "q" in st.query_params:
     _clicked = st.query_params["q"]
     st.session_state["query"] = _clicked
     st.session_state["mode"] = "Lookup"
-    if len(_clicked) == 1 and ak.looks_like_hanzi(_clicked):
-        pg.record_clicked(_clicked)          # looked up while reading → mark weak
     st.query_params.clear()
 
 with st.sidebar:
     st.title("漢字音庫")
     st.caption("Hanzi Sound Library")
     query = st.text_input("Enter Hanzi (single/multi) or English", key="query")
-    mode = st.radio("Mode", ["Lookup", "📖 Read passages", "🎋 Poems", "📝 Quiz",
-                             "🔄 Review", "📊 Progress", "IPA Legend", "Guides",
-                             "Sinitic Paper"],
+    mode = st.radio("Mode", ["Lookup", "📖 Read passages", "🎋 Poems", "IPA Legend",
+                             "Guides", "Sinitic Paper"],
                     key="mode")
     st.caption(f"{len(DATA):,} characters · {len(DIALECT_COLS)} columns")
     if not ak.gt_ready():
@@ -1927,12 +1793,6 @@ if mode == "📖 Read passages":
     render_reading_passage()
 elif mode == "🎋 Poems":
     render_poems()
-elif mode == "📝 Quiz":
-    render_quiz()
-elif mode == "🔄 Review":
-    render_review()
-elif mode == "📊 Progress":
-    render_progress()
 elif mode == "Guides":
     render_guides()
 elif mode == "Sinitic Paper":
