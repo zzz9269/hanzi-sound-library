@@ -6,6 +6,12 @@
       "runtimeExecutable": "C:\\Users\\zacha\\miniconda3\\envs\\env1\\python.exe",
       "runtimeArgs": ["-m", "streamlit", "run", "app.py", "--server.headless", "true", "--server.port", "8502"],
       "port": 8502
+    },
+    {
+      "name": "hanzi-web",
+      "runtimeExecutable": "C:\\Users\\zacha\\miniconda3\\envs\\env1\\python.exe",
+      "runtimeArgs": ["-m", "http.server", "8600", "--directory", "web", "--bind", "127.0.0.1"],
+      "port": 8600
     }
   ]
 }

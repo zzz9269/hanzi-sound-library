@@ -5,13 +5,42 @@ A multilingual lookup tool for the pronunciations of Han characters across the
 Hainanese, Hakka, Wu, Hui, Gan, Xiang, Jin), their **historical layers** (Old
 Chinese, Middle Chinese, Tang, a reconstructed Proto-Min) and the wider
 Sinosphere (Japanese, Okinawan, Korean, Vietnamese). The dataset is built by
-the `hanzihub` package; the front-end is a Streamlit app (`app.py`).
+the `hanzihub` package. There are two front-ends:
+
+- **The web app** (`web/`): a fast, installable app that runs entirely in
+  the browser. **Open it at <https://zzz9269.github.io/hanzi-sound-library/>.**
+- **The Streamlit workbench** (`app.py`): the original research UI with
+  quizzes, review, progress tracking and the guides.
 
 ## Use it on your phone
 
-The app is a Streamlit site, so the simplest "phone app" is a free
-[Streamlit Community Cloud](https://share.streamlit.io) deployment pinned to
-your home screen:
+Open <https://zzz9269.github.io/hanzi-sound-library/> on your phone and add it
+to the home screen. It then opens full-screen like any other app:
+
+- **iPhone (Safari):** Share button → **Add to Home Screen**.
+- **Android (Chrome):** ⋮ menu → **Install app** (or **Add to Home screen**).
+
+The app is a static site on GitHub Pages: it opens instantly, never sleeps,
+and needs no server or API keys. Every character you look up is kept on the
+device, and **Saved → Use offline** downloads all the readings (about 47 MB)
+so lookups work with no connection. Audio uses the phone's own voices for
+Mandarin, Cantonese, Japanese, Korean and Vietnamese, ithuan.tw's SuiSiann
+voice for Taiwanese Hokkien and mogher.com recordings for Teochew.
+
+It deploys itself: every push to `main` that touches the data or `web/` runs
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml), which builds the
+data with `python -m hanzihub.build_web` and publishes `web/`. To try it
+locally:
+
+```powershell
+python -m hanzihub.build_web                     # writes web/data/ (~1 min)
+python -m http.server 8600 --directory web       # then open http://localhost:8600
+```
+
+### The Streamlit workbench
+
+The Streamlit app can also run on a free
+[Streamlit Community Cloud](https://share.streamlit.io) deployment:
 
 1. Push this repository to GitHub (public or private both work).
 2. On share.streamlit.io → **Create app** → pick the repo, branch `main`,

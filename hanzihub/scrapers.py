@@ -98,11 +98,16 @@ _ZHPRON_COL = {
 
 
 _HAN_RE = re.compile(r"[㐀-鿿]")
+# a complete comment, or an unclosed one running to the end of the text
+_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.S)
 
 
 def _extract_template(wt, name):
     """Return the full ``{{name…}}`` template text (brace-balanced, so nested
-    templates in _note params don't truncate it), or ``None``."""
+    templates in _note params don't truncate it), or ``None``. HTML comments
+    are dropped first: editors park alternative readings in them
+    (``|m=zhě<!--, zhe-->``) and their pipes would split parameters."""
+    wt = _HTML_COMMENT_RE.sub("", wt or "")
     start = wt.find("{{" + name)
     if start < 0:
         return None

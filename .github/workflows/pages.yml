@@ -1,0 +1,58 @@
+# Builds the web app's data from the committed dataset and publishes web/ to
+# GitHub Pages: https://zzz9269.github.io/hanzi-sound-library/
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "hanzihub/**"
+      - "data/out/**"
+      - "data/raw/**"
+      - "requirements.txt"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build dependencies
+        run: pip install pandas pyarrow requests pypinyin opencc-python-reimplemented
+
+      - name: Build web data
+        run: python -m hanzihub.build_web
+
+      - name: Stamp the service worker with this commit
+        run: sed -i "s/__BUILD__/${GITHUB_SHA::10}/" web/sw.js
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

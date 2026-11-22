@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>漢字音庫 · Hanzi Sound Library</title>
+  <meta name="description" content="How every Chinese character sounds across Mandarin, Cantonese, Hokkien, Teochew, Hakka, Wu and a dozen more varieties, through Middle and Old Chinese, and in Japanese, Korean and Vietnamese.">
+  <meta name="theme-color" content="#f6f2ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151310" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="漢字音庫">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Charis+SIL:wght@400;700&family=Inter:wght@400;500;600;700&family=Noto+Serif+TC:wght@500;700&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+  <script>
+    // theme before first paint (no flash)
+    try { const t = localStorage.getItem("hz.theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/" aria-label="漢字音庫 home">
+        <span class="seal" aria-hidden="true">音</span>
+        <span class="wordmark"><b>漢字音庫</b><small>Hanzi Sound Library</small></span>
+      </a>
+      <form class="search" id="search" role="search" autocomplete="off">
+        <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+        <input id="q" type="search" enterkeyhint="search" spellcheck="false"
+               placeholder="Character, reading or meaning" aria-label="Search">
+        <button type="button" class="search-clear" id="q-clear" aria-label="Clear" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </form>
+      <nav class="topnav" aria-label="Sections">
+        <a href="#/" data-tab="home">Look up</a>
+        <a href="#/read" data-tab="read">Read</a>
+        <a href="#/poems" data-tab="poems">Poems</a>
+        <a href="#/saved" data-tab="saved">Saved</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <a href="#/" data-tab="home">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+      <span>Look up</span></a>
+    <a href="#/read" data-tab="read">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5C6.5 4 9.5 4 12 5.5v14c-2.5-1.5-5.5-1.5-8 0z"/><path d="M20 5.5C17.5 4 14.5 4 12 5.5v14c2.5-1.5 5.5-1.5 8 0z"/></svg>
+      <span>Read</span></a>
+    <a href="#/poems" data-tab="poems">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v18M12 6v15M17 3v18"/><path d="M5 21h14"/></svg>
+      <span>Poems</span></a>
+    <a href="#/saved" data-tab="saved">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
+      <span>Saved</span></a>
+  </nav>
+
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Character preview" hidden></section>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <noscript><p style="padding:24px">漢字音庫 needs JavaScript to run.</p></noscript>
+</body>
+</html>

@@ -28,3 +28,6 @@ _v9_dump.txt
 baseline_ml_eval.txt
 newfeat_ml_eval.txt
 rebuild_log.txt
+
+# --- Web app: data is generated in CI (python -m hanzihub.build_web) ---
+web/data/
