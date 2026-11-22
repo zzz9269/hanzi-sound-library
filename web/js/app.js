@@ -406,8 +406,8 @@ async function charView(ch) {
     <section class="section">
       ${localityHTML(e)}
       ${fold("glyph", "字", "Glyph origin", "How the character was formed · Wiktionary")}
-      ${fold("entry", "典", "Dictionary entry", "Meanings, etymology, compounds · Wiktionary")}
-      ${fold("sources", "源", "Sources", "Where every reading on this page comes from")}
+      ${fold("ety", "源", "Etymology", "Where the word comes from · Wiktionary")}
+      ${fold("sources", "據", "Sources", "Where every reading on this page comes from")}
     </section>
     ${footer()}
   </article>`;
@@ -443,10 +443,11 @@ function bindLazyFolds(ch) {
       return html ? `<div class="wikt">${html}<div class="wikt-src">From English Wiktionary · CC BY-SA 4.0</div></div>`
         : `<div class="loading">Wiktionary has no glyph-origin notes for ${esc(ch)}.</div>`;
     },
-    entry: async () => {
-      const html = await W.chineseEntry(ch);
-      return html ? `<div class="wikt">${html}<div class="wikt-src">From English Wiktionary · CC BY-SA 4.0 · <a href="${W.pageUrl(ch)}" target="_blank" rel="noopener">open the full page</a></div></div>`
-        : `<div class="loading">No Chinese entry on Wiktionary for ${esc(ch)}.</div>`;
+    ety: async () => {
+      const parts = await W.etymology(ch);
+      return parts.length
+        ? `<div class="wikt">${parts.map((x) => (x.title ? `<h4>${esc(x.title)}</h4>` : "") + x.html).join("")}<div class="wikt-src">From English Wiktionary · CC BY-SA 4.0 · <a href="${W.pageUrl(ch)}" target="_blank" rel="noopener">open the full page</a></div></div>`
+        : `<div class="loading">Wiktionary has no etymology notes for ${esc(ch)}.</div>`;
     },
     sources: async () => {
       const rows = await D.provenance(ch);
