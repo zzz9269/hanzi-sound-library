@@ -2600,6 +2600,9 @@ _MC_READ_KEYS = sorted(_MC_READ, key=len, reverse=True)
 
 
 def _mc_readable(syl: str) -> str:
+    # labialised coda (鍾 -oŋʷ, 燭 -okʷ): the rounding is heard before the
+    # coda, as in Baxter's spelling lyowng / lyowk, not "lyongw"
+    syl = _CODA_LABIAL.sub(lambda m: "ʷ" + m.group(1), syl)
     out, i, L = [], 0, len(syl)
     while i < L:
         for k in _MC_READ_KEYS:
