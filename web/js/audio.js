@@ -51,18 +51,26 @@ export function stop() {
   try { window.speechSynthesis?.cancel(); } catch { /* */ }
 }
 
+let utter = null;                // held so Chrome doesn't garbage-collect it mid-speech
 export function speak(text, lang, { rate = 0.9, btn } = {}) {
   stop();
   const v = pickVoice(lang);
   if (!window.speechSynthesis || !v) return Promise.reject(new Error("no voice"));
   return new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text);
+    utter = u;
     u.voice = v; u.lang = v.lang; u.rate = rate;
     u.onstart = () => setBtn(btn, "playing");
-    u.onend = u.onerror = () => { setBtn(btn, ""); if (current?.btn === btn) current = null; resolve(); };
+    u.onend = u.onerror = () => { setBtn(btn, ""); if (current?.btn === btn) current = null; if (utter === u) utter = null; resolve(); };
     current = { stop: () => speechSynthesis.cancel(), btn };
     setBtn(btn, "busy");
-    speechSynthesis.speak(u);
+    // Chrome can drop (or replay the previous) utterance queued in the same tick
+    // as cancel(): give the engine a moment to clear before speaking.
+    setTimeout(() => {
+      if (utter !== u) { resolve(); return; }
+      speechSynthesis.resume();
+      speechSynthesis.speak(u);
+    }, 80);
   });
 }
 

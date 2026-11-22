@@ -103,7 +103,7 @@ function readingHTML(r, { audio = "" } = {}) {
     + (k ? `<span class="badge-k ${r.k}" title="${esc(k[1])}">${k[0]}</span>` : "")
     + (r.q ? `<span class="badge-q" title="Unverified spelling: from a survey spreadsheet that writes one letter for two vowels">?</span>` : "")
     + (r.m ? `<span class="badge-ml" title="Machine-predicted: inferred by a model, not attested in a source">ML</span>` : "")
-    + (r.e ? `<span class="e">${esc(r.e)}</span>` : "") + audio + `</span>`;
+    + (r.e ? `<span class="e">${esc(r.e)}</span>` : "") + (r.rom ? `<span class="rom">${esc(r.rom)}</span>` : "") + audio + `</span>`;
 }
 
 function rowAudio(col, e, r) {
@@ -135,22 +135,97 @@ function simpleRow(label, native, scheme, inner) {
     <div class="rd-vals">${inner}</div></div>`;
 }
 
+// ------------------------------------------------- Japanese / Korean text --
+// Romaji is computed from each kana chip, so the romanisation always matches
+// the reading it sits under (and what the voice is given to say).
+const KANA = (() => {
+  const rows = {
+    "": "あいうえお", k: "かきくけこ", s: "さしすせそ", t: "たちつてと", n: "なにぬねの",
+    h: "はひふへほ", m: "まみむめも", y: "や ゆ よ", r: "らりるれろ", w: "わゐ ゑを",
+    g: "がぎぐげご", z: "ざじずぜぞ", d: "だぢづでど", b: "ばびぶべぼ", p: "ぱぴぷぺぽ",
+  };
+  const m = {};
+  for (const [c, ks] of Object.entries(rows))
+    [...ks].forEach((k, i) => { if (k !== " ") m[k] = c + "aiueo"[i]; });
+  Object.assign(m, { し: "shi", ち: "chi", つ: "tsu", ふ: "fu", じ: "ji", ぢ: "ji", づ: "zu",
+    ゐ: "i", ゑ: "e", を: "o", ん: "n", ぁ: "a", ぃ: "i", ぅ: "u", ぇ: "e", ぉ: "o" });
+  return m;
+})();
+const SMALL_Y = { ゃ: "a", ゅ: "u", ょ: "o" };
+const toHira = (s) => s.replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+function kanaRomaji(kana) {
+  const h = toHira(kana).replace(/[.\-・]/g, "");
+  let out = "", dbl = false;
+  for (let i = 0; i < h.length; i++) {
+    const c = h[i];
+    if (c === "っ") { dbl = true; continue; }
+    if (c === "ー") { out += out.slice(-1); continue; }
+    let r = KANA[c];
+    if (r == null) { out += c; continue; }
+    const sm = SMALL_Y[h[i + 1]];
+    if (sm && r.endsWith("i") && r !== "i") {     // きゃ kya, しゃ sha, じゃ ja
+      r = /^(sh|ch|j)/.test(r) ? r.slice(0, -1) + sm : r.slice(0, -1) + "y" + sm;
+      i++;
+    }
+    if (dbl) { out += r.startsWith("ch") ? "t" : r[0]; dbl = false; }
+    out += r;
+  }
+  return dbl ? out + "-" : out;     // ガッ: a geminating form (gat-, gak-)
+}
+const isKata = (s) => /[ァ-ヶ]/.test(s) && !/[ぁ-ゖ]/.test(s);
+
+// Hangul syllable → Revised Romanization (single syllables, so no assimilation)
+const RR_I = ["g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t", "p", "h"];
+const RR_V = ["a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u", "wo", "we", "wi", "yu", "eu", "ui", "i"];
+const RR_F = ["", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "l", "l", "l", "p", "l", "m", "p", "p", "t", "t", "ng", "t", "t", "k", "t", "p", "t"];
+const hangulParts = (syl) => {
+  const c = syl.codePointAt(0) - 0xac00;
+  return c >= 0 && c < 11172 && syl.length === 1 ? [Math.floor(c / 588), Math.floor((c % 588) / 28), c % 28] : null;
+};
+const hangulRR = (s) => [...s].map((ch) => { const p = hangulParts(ch); return p ? RR_I[p[0]] + RR_V[p[1]] + RR_F[p[2]] : ch; }).join("");
+// 두음법칙: at the start of a word, ㄹ → ㅇ before i / y-vowels and ㄴ elsewhere;
+// ㄴ → ㅇ before i / y-vowels (룡 → 용, 로 → 노, 녀 → 여)
+const Y_VOWEL = new Set([2, 3, 6, 7, 12, 17, 20]);
+function dueum(syl) {
+  const p = hangulParts(syl);
+  if (!p) return syl;
+  let [i, v, f] = p;
+  if (i === 5) i = Y_VOWEL.has(v) ? 11 : 2;
+  else if (i === 2 && Y_VOWEL.has(v)) i = 11;
+  else return syl;
+  return String.fromCharCode(0xac00 + i * 588 + v * 28 + f);
+}
+
 function sinoRows(e) {
   const out = [];
   const g = (id) => e.v?.[D.colIdx(id)] || [];
   const ja = g("Japanese"), on = g("Japanese On"), kun = g("Japanese Kun");
   if (ja.length || on.length || kun.length) {
-    const chips = ja.map((r) => readingHTML(r, { audio: /[぀-ヿ]/.test(r.t) ? ttsBtn(r.t, "ja-JP", { small: true, label: `Play ${r.t}` }) : "" })).join("");
-    const rom = [on.length ? `<span><span class="lbl">On</span> ${on.map((r) => esc(r.t)).join(" · ")}</span>` : "",
-                 kun.length ? `<span><span class="lbl">Kun</span> ${kun.map((r) => esc(r.t)).join(" · ")}</span>` : ""].join("");
-    out.push(simpleRow("Japanese", "日本語", "on'yomi · kun'yomi",
-      `<div class="readings">${chips}</div>${rom ? `<div class="ipa-line" style="display:flex">${rom}</div>` : ""}`));
+    const chip = (r) => {
+      const kana = r.t.replace(/[.\-]/g, "");
+      return readingHTML({ ...r, rom: kanaRomaji(r.t) }, { audio: ttsBtn(kana, "ja-JP", { small: true, label: `Play ${r.t}` }) });
+    };
+    const roRow = (rs) => `<div class="readings">${rs.map((r) => readingHTML(r)).join("")}</div>`;
+    const onK = ja.filter((r) => isKata(r.t)), kunK = ja.filter((r) => !isKata(r.t));
+    const onBody = onK.length ? `<div class="readings">${onK.map(chip).join("")}</div>` : on.length ? roRow(on) : "";
+    const kunBody = kunK.length ? `<div class="readings">${kunK.map(chip).join("")}</div>` : kun.length ? roRow(kun) : "";
+    if (onBody) out.push(simpleRow("Japanese on'yomi", "音読み", "Sino-Japanese · borrowed from Chinese", onBody));
+    if (kunBody) out.push(simpleRow("Japanese kun'yomi", "訓読み", "native Japanese word · not from Chinese", kunBody));
   }
-  const ko = g("Korean (Hangul)"), yale = g("Korean (romanized)");
+  const ko = g("Korean (Hangul)");
   if (ko.length) {
-    const chips = ko.map((r, i) => readingHTML({ ...r, e: ko.length === yale.length ? yale[i].t : "" },
-      { audio: ttsBtn(r.t, "ko-KR", { small: true, label: `Play ${r.t}` }) })).join("");
-    out.push(simpleRow("Korean", "한국어", "Hangul · Yale", `<div class="readings">${chips}</div>`));
+    // a ㄹ/ㄴ reading whose 두음법칙 form is also listed is that same reading as it
+    // sounds INSIDE a word (공룡 gongnyong): note it on the word-initial chip
+    const texts = new Set(ko.map((r) => r.t));
+    const inner = new Map();
+    ko.forEach((r) => { const d = dueum(r.t); if (d !== r.t && texts.has(d)) inner.set(d, r.t); });
+    const chips = ko.filter((r) => ![...inner.values()].includes(r.t)).map((r) => {
+      return readingHTML({ ...r, rom: hangulRR(r.t) },
+        { audio: ttsBtn(r.t, "ko-KR", { small: true, label: `Play ${r.t}` }) });
+    }).join("");
+    const note = inner.size ? `<div class="ipa-line" style="display:flex"><span>${[...inner].map(([d, w]) =>
+      `<span class="han">${esc(w)}</span> (${esc(hangulRR(w))}) and <span class="han">${esc(d)}</span> are one reading: South Korean writes and says ${esc(d)} at the start of a word (두음법칙) and ${esc(w)} inside one.`).join(" ")}</span></div>` : "";
+    out.push(simpleRow("Korean", "한국어", "Hangul · Revised Romanization", `<div class="readings">${chips}</div>${note}`));
   }
   const vi = g("Vietnamese");
   if (vi.length) {
