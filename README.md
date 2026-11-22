@@ -5,12 +5,9 @@ A multilingual lookup tool for the pronunciations of Han characters across the
 Hainanese, Hakka, Wu, Hui, Gan, Xiang, Jin), their **historical layers** (Old
 Chinese, Middle Chinese, Tang, a reconstructed Proto-Min) and the wider
 Sinosphere (Japanese, Okinawan, Korean, Vietnamese). The dataset is built by
-the `hanzihub` package. There are two front-ends:
-
-- **The web app** (`web/`): a fast, installable app that runs entirely in
-  the browser. **Open it at <https://zzz9269.github.io/hanzi-sound-library/>.**
-- **The Streamlit workbench** (`app.py`): the original research UI, with
-  the guides and the Sinitic paper.
+the `hanzihub` package and shown by a fast, installable web app (`web/`) that
+runs entirely in the browser. **Open it at
+<https://zzz9269.github.io/hanzi-sound-library/>.**
 
 ## Use it on your phone
 
@@ -46,57 +43,19 @@ python -m hanzihub.build_web                     # writes web/data/ (~1 min)
 python -m http.server 8600 --directory web       # then open http://localhost:8600
 ```
 
-### The Streamlit workbench
+The committed `data/out/*.parquet` files *are* the dataset; the web build
+reads them directly.
 
-The Streamlit app can also run on a free
-[Streamlit Community Cloud](https://share.streamlit.io) deployment:
-
-1. Push this repository to GitHub (public or private both work).
-2. On share.streamlit.io → **Create app** → pick the repo, branch `main`,
-   main file `app.py`. Under *Advanced settings* choose Python 3.12.
-3. *(Optional — enables Google TTS + translation)* In the app's
-   **Settings → Secrets**, paste the `[gcp_service_account]` block from
-   [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example)
-   filled with your service-account key's fields. Without it every reading
-   still shows; only Google audio/translation are off (Hokkien and Teochew
-   audio come from free public services and work regardless).
-4. Open the app URL on your phone → browser menu → **Add to Home Screen**.
-   It then launches full-screen like an app.
-
-Keep the app's sharing setting **private** (only you) if Google credentials
-are configured, so nobody else can spend your TTS/translation quota.
-
-The committed `data/out/*.parquet` files *are* the dataset — the hosted app
-needs no build step.
-
-## Running locally
-
-```powershell
-pip install -r requirements.txt
-streamlit run app.py          # opens the lookup UI in your browser
-```
-
-(`launch_app.bat` does the same with a fixed interpreter path.)
-
-The UI shows per-topolect IPA with a **rough English approximation**,
-machine-predicted readings flagged `🤖 ML`, a collapsible locality layer
-(~75 points), per-reading provenance, TTS (Google voices for Mandarin /
-Cantonese / Japanese / Korean / Vietnamese; ithuan.tw for Taiwanese Hokkien;
-mogher.com recordings for Teochew, both syllable by syllable in citation
-tones), a **glyph-origin** panel,
-the full Wiktionary entry, a 📖 passage reader with per-word ruby readings in
-any variety, and a 🎋 classical-poetry library with recite mode.
-
-Notable engine features:
+## Engine features
 
 * **Unified Chao tone letters** — every pitch contour displays as tone letters
   (`tin˥˥`, `tʰieŋ˥˥`); tone-*class* digits (Jyutping / Peng'im / Wugniu) are
   mapped through per-scheme citation-contour tables; tone-*category*
   superscripts (Proto-Min `*tʰin¹`, Baxter MC `tʰen¹`) are deliberately left
-  as numbers. See Guides → Tone contour guide.
+  as numbers. See `Guides/`.
 * **Sound-evolution tree with per-character sound laws** (`hanzihub/soundlaws.py`).
 * **反切 breakdown**, **reading search** (`tian`, `tin1`, `thien`, Baxter `then`),
-  **Min tone sandhi** (phrase level), **Markdown export**.
+  **Markdown export**.
 
 Run the test suite with `python -m pytest tests` (needs
 `pip install -r requirements-build.txt`).
@@ -151,18 +110,6 @@ To move to a newer MCPDict snapshot, bump `MCPDICT_SHA` in
 `hanzihub/sources/mcpdict.py`, delete `data/raw/mcpdict/`, rebuild and re-run
 the tests. Paths resolve from the repo root, or from `HANZIHUB_ROOT`.
 
-## Credentials (Google Cloud TTS + Translation)
-
-**Never commit the service-account key.** Any one of these works:
-
-* `GOOGLE_APPLICATION_CREDENTIALS` pointing at the key file (local);
-* a `[gcp_service_account]` block in `.streamlit/secrets.toml` (gitignored)
-  or in the Streamlit Cloud Secrets box (hosted);
-* the legacy `TTS/tts-robot-key.json` (gitignored).
-
-> ⚠️ The key `TTS/tts-robot-key.json` has lived in a synced OneDrive folder —
-> rotate it in the Google Cloud console and use the new key for the secrets.
-
 ## Licence
 
 Code: MIT (`LICENSE`). Data: compiled from third-party sources with their own
@@ -172,7 +119,7 @@ terms; the built tables are shared under CC BY-SA 4.0 — see
 ## Layout
 
 ```
-app.py            Streamlit front-end
+web/              the web app (static PWA; data/ is generated)
 hanzihub/
   paths.py        central path config (HANZIHUB_ROOT / repo root)
   schema.py       columns, 39-locality order + branch map, source tags
@@ -182,9 +129,10 @@ hanzihub/
   reconstruct.py  comparative Proto-Min reconstruction
   impute.py       gated ML imputation (calibrated, abstains when unsure)
   build_dataset.py  CLI orchestrator
-  appkit.py / scrapers.py / reading.py   app logic
+  build_web.py    dataset -> web/data/ shards
+  appkit.py / scrapers.py / reading.py   shared reading logic
 data/raw/         source caches (committed, small)
 data/out/         build outputs (parquet committed; CSV local only)
-Guides/           in-app guides
+Guides/           reference guides
 tests/            pytest suite
 ```

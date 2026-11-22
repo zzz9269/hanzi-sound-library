@@ -1,23 +1,9 @@
-# 漢字音庫 (hanzihub) — APP runtime dependencies.
-# This is the file Streamlit Community Cloud installs. Dataset-building and
-# test extras live in requirements-build.txt.
-streamlit>=1.40,<2
+# 漢字音庫 (hanzihub) — what the web build needs
+# (python -m hanzihub.build_web, run by .github/workflows/pages.yml).
+# Dataset-building and test extras live in requirements-build.txt.
 pandas>=2.0
 numpy>=1.24
 pyarrow>=12.0          # reads the committed data/out/*.parquet
 requests>=2.31
-certifi
-beautifulsoup4>=4.12   # JapanDict / koreanhanja / Nôm / Wiktionary scraping
-lxml>=4.9              # pandas.read_html backend for Nôm tables
-python-docx>=1.1       # renders the Sinitic evolution paper (.docx) in Guides
-hanja>=0.13            # Hanzi -> Hangul (local Korean fallback)
-hangul-romanize>=0.1   # Hangul romanization
-pypinyin>=0.50         # local tone-marked pinyin for the Definition block
-pykakasi>=2.2          # katakana -> Hepburn for the on'yomi pairs
+pypinyin>=0.50         # word-level Mandarin readings
 opencc-python-reimplemented>=0.1.7  # simplified <-> traditional
-
-# Google Cloud TTS + Translation. Credentials: GOOGLE_APPLICATION_CREDENTIALS
-# locally, or a [gcp_service_account] block in Streamlit secrets (see README).
-google-auth>=2.20
-google-cloud-texttospeech>=2.16
-google-cloud-translate>=3.15

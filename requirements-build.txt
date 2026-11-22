@@ -1,6 +1,12 @@
 # Extras for rebuilding the dataset (python -m hanzihub.build_dataset),
-# running the tests, and the legacy notebook front-end.
+# running the tests, scraping sources, and the legacy notebook front-end.
 -r requirements.txt
+certifi
+beautifulsoup4>=4.12   # Wiktionary / JapanDict / Nôm scraping
+lxml>=4.9
+hanja>=0.13
+hangul-romanize>=0.1
+pykakasi>=2.2
 openpyxl>=3.1          # Hakka / Teochew / Baxter–Sagart .xlsx sources
 scikit-learn>=1.3      # ML imputation (impute.py)
 regex>=2023.0          # Unicode \p{Han} matching (optional; re fallback exists)
