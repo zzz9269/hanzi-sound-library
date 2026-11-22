@@ -267,8 +267,8 @@ const TANG_V = {
   e: ["e", "e as in “bed”, a little closer (like French é)"], "ə": ["uh", "uh, the vowel in “about”"],
   i: ["ee", "ee as in “see”"], o: ["o", "a pure o, as in “go”"], u: ["oo", "oo as in “food”"],
 };
-const TANG_TONE = { "\u0300": ["̀", "a grave accent marks the departing tone (去聲)"],
-                    "\u030C": ["̌", "a caron marks the rising tone (上聲)"] };
+const TANG_TONE = { "\u0300": ["◌̀", "a grave accent marks the departing tone (去聲)"],
+                    "\u030C": ["◌̌", "a caron marks the rising tone (上聲)"] };
 
 /** Unihan kTang can hold several space-separated readings, and lists a
  *  reading both with and without Stimson's * ("*qit qit"): split them, and
