@@ -129,6 +129,9 @@ def c_teochew_phrase(toks, spoken):
     # returns (mp3|None, missing_chars); editing this body also invalidates any
     # cache entries from when it returned bare bytes (avoids a stale-unpack)
     mp3, missing = ak.teochew_phrase_mp3(toks, spoken)
+    if missing and not ak.mogher_available():
+        # don't cache a gap caused by an outage (cache_data skips exceptions)
+        raise ak.MogherUnavailable("mogher.com is not responding — try again shortly")
     return mp3, missing
 
 
@@ -1352,6 +1355,7 @@ def c_teochew_voiced_reads(sent, trad, literary=False):
     The Hokkien tâi-lô referee (ithuan.tw) only refines which of OUR doublets
     seeds mogher's ranking, so its outage must NOT discard the remap — it is
     caught and the plain per-char reading is used as the seed instead."""
+    ak.mogher_prefetch(sent)          # one parallel pass over the distinct chars
     try:
         kip = c_hokkien_tailo(trad)
     except Exception:
@@ -1360,9 +1364,14 @@ def c_teochew_voiced_reads(sent, trad, literary=False):
         base = ak.teochew_tailo_matched_tokens(DATA, "Teochew", sent, trad, kip)
     except Exception:
         base = ak.per_char_tokens(DATA, "Teochew", sent, trad)
-    return [(ch, ak.teochew_voiced_reading(ch, tok, literary)
-             if tok and ak.looks_like_hanzi(ch) else tok)
-            for ch, tok in base]
+    out = [(ch, ak.teochew_voiced_reading(ch, tok, literary)
+            if tok and ak.looks_like_hanzi(ch) else tok)
+           for ch, tok in base]
+    if not ak.mogher_available():
+        # outage: the caller falls back to plain readings; nothing is cached,
+        # so the mogher remap is retried once it answers again
+        raise ak.MogherUnavailable("mogher.com is not responding")
+    return out
 
 
 def _passage_reading(dialect, sent, trad, literary=False):

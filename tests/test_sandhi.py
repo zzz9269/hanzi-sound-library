@@ -302,8 +302,7 @@ def test_teochew_unit_mp3_raises_when_nothing_recorded(monkeypatch):
 
 def test_teochew_voiced_reading_shows_what_it_plays(monkeypatch):
     _patch_mogher(monkeypatch, ["se1", "si1", "sai1"])
-    monkeypatch.setattr(ak, "_mogher_fetch",
-                        lambda syl: b"\xff\xfbX" if syl == "si1" else None)
+    monkeypatch.setattr(ak, "mogher_has_recording", lambda syl: syl == "si1")
     # top pick se1 is unrecorded → show the recorded si1 (what audio plays),
     # never one thing read and another heard
     assert ak.teochew_voiced_reading("思", "su1") == "si1"
@@ -312,14 +311,13 @@ def test_teochew_voiced_reading_shows_what_it_plays(monkeypatch):
 def test_teochew_voiced_reading_rescues_ipa_entry(monkeypatch):
     # 床's stored reading is IPA, not Peng'im; mogher's ceng5 is shown+voiced
     _patch_mogher(monkeypatch, ["ceng5"])
-    monkeypatch.setattr(ak, "_mogher_fetch",
-                        lambda syl: b"\xff\xfbX" if syl == "ceng5" else None)
+    monkeypatch.setattr(ak, "mogher_has_recording", lambda syl: syl == "ceng5")
     assert ak.teochew_voiced_reading("床", "t͡sʰɯŋ55") == "ceng5"
 
 
 def test_teochew_voiced_reading_falls_back_when_nothing_recorded(monkeypatch):
     _patch_mogher(monkeypatch, ["ceng5"])
-    monkeypatch.setattr(ak, "_mogher_fetch", lambda syl: None)
+    monkeypatch.setattr(ak, "mogher_has_recording", lambda syl: False)
     # nothing recorded → still return mogher's top reading (display), audio
     # branch will just report unavailable
     assert ak.teochew_voiced_reading("床", "t͡sʰɯŋ55") == "ceng5"
@@ -372,22 +370,86 @@ def test_t2s_text_maps_traditional_to_simplified_for_mogher():
     assert ak.t2s_text("发") == "发"   # already simplified → unchanged
 
 
-def test_mogher_char_readings_queries_simplified(monkeypatch):
+# Live markup captured from mogher.com's 2026-11 redesign (trimmed).
+_MOGHER_PAGE = """
+<div class="readingRow"><span class="readingRowLabel">普通话</span>
+  <div class="readingChips"><span class="mandarinReading">tiān</span></div></div>
+<div class="readingRow"><span class="readingRowLabel">潮州音</span>
+  <div class="readingChips">
+  <span class="pronunciationTooltip"><button class="readingChip pronunciationChip audioButton"
+    type="button" data-audio="/sound/syllabes/thi~1.mp3">tin1 <small>白</small><svg><polygon/></svg></button></span>
+  <span class="pronunciationTooltip"><button class="readingChip pronunciationChip audioButton"
+    type="button" data-audio="/sound/syllabes/thieng1.mp3">tiêng1 <small>文</small><svg></svg></button></span>
+  <span class="pronunciationTooltip"><button class="readingChip pronunciationChip audioButton"
+    type="button" data-audio="/sound/syllabes/thi~1.mp3">tin1 <small>文</small></button></span>
+  <span class="readingChip">se3</span>
+  </div></div>
+<div class="readingRow"><span class="readingRowLabel">其他</span></div>
+"""
+
+
+def test_parse_mogher_char_page_reads_chips_types_and_audio():
+    assert ak.parse_mogher_char_page(_MOGHER_PAGE) == [
+        ("tin1", "白", "thi~1.mp3"),        # first badge wins on a repeat
+        ("tiêng1", "文", "thieng1.mp3"),
+        ("se3", "", ""),                    # listed but not recorded
+    ]
+    assert ak.parse_mogher_char_page("<html>no teochew row</html>") == []
+
+
+def test_mogher_char_readings_queries_simplified_and_learns_mp3(monkeypatch, tmp_path):
     seen = {}
+
     class R:
         ok = True
-        text = ('<a href="/dic/czpy/huêg4"> huêg4 '
-                '<label class="label label-primary wendu-label">文</label></a>')
-    def fake_get(url, timeout=0):
+        text = _MOGHER_PAGE.replace("tin1", "huêg4").replace("thi~1", "huek4")
+
+    def fake_get(url):
         seen["url"] = url
         return R()
-    monkeypatch.setattr(ak, "_tts_cache_path",
-                        lambda *a: __import__("pathlib").Path(
-                            __import__("tempfile").mkdtemp()) / "x")
-    import requests
-    monkeypatch.setattr(requests, "get", fake_get)
-    assert ak.mogher_char_readings("髮") == ["huêg4"]
+    monkeypatch.setattr(ak, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(ak, "_MOGHER_MP3", {})
+    monkeypatch.setattr(ak, "_MOGHER_MP3_LOADED", True)
+    monkeypatch.setattr(ak, "_mogher_get", fake_get)
+    assert ak.mogher_char_readings("髮")[0] == "huêg4"
     assert seen["url"].endswith("/发")   # queried the simplified form
+    assert ak._MOGHER_MP3["huêg4"] == "huek4.mp3"
+    assert ak.mogher_has_recording("huêg4") and not ak.mogher_has_recording("se3")
+    seen.clear()                          # 2nd call: disk cache, no request
+    assert ak.mogher_char_readings("发")[0] == "huêg4" and not seen
+
+
+def test_mogher_unreachable_fails_fast_then_cools_down(monkeypatch):
+    import requests
+    calls = []
+
+    class S:
+        def get(self, url, timeout=None):
+            calls.append(url)
+            raise requests.ConnectTimeout("blocked")
+    monkeypatch.setattr(ak, "_mogher_session", lambda: S())
+    monkeypatch.setattr(ak, "_MOGHER_DOWN_UNTIL", 0.0)
+    with pytest.raises(ak.MogherUnavailable):
+        ak._mogher_get("https://www.mogher.com/天")
+    assert not ak.mogher_available()
+    with pytest.raises(ak.MogherUnavailable):      # breaker open: no 2nd hit
+        ak._mogher_get("https://www.mogher.com/地")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("pengim, fname", [
+    # every pair observed on mogher.com character pages (2026-11)
+    ("tin1", "thi~1.mp3"), ("tiêng1", "thieng1.mp3"), ("si1", "si1.mp3"),
+    ("se1", "sur1.mp3"), ("se3", "sur3.mp3"), ("sai1", "sai1.mp3"),
+    ("ieu1", "ieu1.mp3"), ("ig4", "ik4.mp3"), ("zêg8", "tsek8.mp3"),
+    ("no6", "no6.mp3"), ("ri6", "ji6.mp3"), ("kui3", "khui3.mp3"),
+    ("ki3", "khi3.mp3"), ("ceng5", "tshurng5.mp3"), ("huêg4", "huek4.mp3"),
+    ("ziah8", "tsiah8.mp3"), ("sig8", "sik8.mp3"), ("sih8", "sih8.mp3"),
+    ("se6", "sur6.mp3"), ("ho2", "ho2.mp3"), ("haon3", "hau~3.mp3"),
+    ("hao2", "hau2.mp3"), ("zu1", "tsu1.mp3"), ("suan2", "sua~2.mp3"),
+])
+def test_pengim_to_mogher_file_matches_mogher_names(pengim, fname):
+    assert ak.pengim_to_mogher_file(pengim) == fname
 
 
 def test_mogher_variants_cover_chaozhou_shantou_vowels():

@@ -12,9 +12,11 @@ import csv
 import hashlib
 import html as _html
 import itertools
+import json
 import logging
 import os
 import re
+import threading
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
@@ -1671,37 +1673,192 @@ def _teochew_cognate_score(tok: str, kcls: str, initials) -> int:
 
 
 MOGHER_CHAR_URL = "https://www.mogher.com/{}"
-# A reading link, optionally followed by mogher's 文/白/训 (wendu) badge. 训读 is a
-# semantic GLOSS reading — 二's ``no6`` 训 is really the word "two" (兩), not 二's
-# own sound — so the type is captured to prefer 文 (literary) / 白 (colloquial).
-_MOGHER_READING_RE = re.compile(
-    r'/dic/czpy/([a-zê]+\d)"[^>]*>\s*[a-zê0-9]+\s*'
-    r'(?:<label[^>]*wendu-label[^>]*>\s*([^<\s]+)\s*</label>)?')
+# mogher.com (redesigned 2026-11) lists a character's Teochew readings in the
+# 潮州音 row as chips, each carrying its OWN recording and an optional
+# 文/白/训/俗 badge:
+#   <button class="readingChip … audioButton" data-audio="/sound/syllabes/thi~1.mp3">
+#     tin1 <small>白</small>…</button>
+# so ONE character-page request yields every reading, its type and its mp3
+# file name (the old per-syllable /dic/czpy/ pages no longer carry audio).
+# 训读 is a semantic GLOSS reading — 二's ``no6`` 训 is really the word "two"
+# (兩) — so the type is kept to prefer 文 (literary) / 白 (colloquial).
+_MOGHER_ROW_RE = re.compile(r'readingRowLabel">\s*潮州音\s*</span>(.*?)(?:class="readingRow"|</dl>|$)',
+                            re.S)
+_MOGHER_CHIP_RE = re.compile(
+    r'<(button|span)([^>]*\breadingChip\b[^>]*)>(.*?)</\1>', re.S)
+_MOGHER_AUDIO_ATTR_RE = re.compile(r'data-audio="[^"]*?/sound/syllabes/([^"]+?\.mp3)"')
+_MOGHER_TIMEOUT = 15
+# Peng'im syllable → mogher mp3 file name, learnt from every character page
+# parsed (so audio never needs a second lookup) and persisted across restarts.
+_MOGHER_MP3: dict[str, str] = {}
+_MOGHER_MP3_LOADED = False
+_MOGHER_LOCK = threading.Lock()
+
+
+def _mogher_session():
+    """One keep-alive HTTP session per thread (mogher's TLS handshake is a
+    large share of each request's latency)."""
+    import requests
+    s = getattr(_MOGHER_TLS, "s", None)
+    if s is None:
+        s = _MOGHER_TLS.s = requests.Session()
+        s.headers["User-Agent"] = "Mozilla/5.0 (hanzi-sound-library)"
+    return s
+
+
+_MOGHER_TLS = threading.local()
+# Circuit breaker: when mogher can't be reached (it drops connections under a
+# burst, or is simply down) every later call fails FAST for a while instead of
+# each character waiting out its own timeout — that wait was the reader's
+# "takes forever". Connect timeout is short; a slow-but-alive page still gets
+# the longer read timeout.
+_MOGHER_DOWN_UNTIL = 0.0
+_MOGHER_COOLDOWN_S = 300
+_MOGHER_CONNECT_TIMEOUT = 6
+_MOGHER_WORKERS = 3          # mogher blocks bursts; stay polite
+
+
+class MogherUnavailable(RuntimeError):
+    pass
+
+
+def _mogher_get(url: str):
+    """GET from mogher.com through the circuit breaker."""
+    global _MOGHER_DOWN_UNTIL
+    import time
+    import requests
+    if time.time() < _MOGHER_DOWN_UNTIL:
+        raise MogherUnavailable("mogher.com unreachable (cooling down)")
+    try:
+        return _mogher_session().get(
+            url, timeout=(_MOGHER_CONNECT_TIMEOUT, _MOGHER_TIMEOUT))
+    except (requests.ConnectionError, requests.Timeout) as e:
+        _MOGHER_DOWN_UNTIL = time.time() + _MOGHER_COOLDOWN_S
+        log.warning("mogher.com unreachable, pausing for %ss: %s",
+                    _MOGHER_COOLDOWN_S, type(e).__name__)
+        raise MogherUnavailable(str(e)) from e
+
+
+def mogher_available() -> bool:
+    import time
+    return time.time() >= _MOGHER_DOWN_UNTIL
+
+
+def _mogher_mp3_map_path() -> Path:
+    p = Path(CACHE_DIR) / "mogher_mp3.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _mogher_mp3_map() -> dict[str, str]:
+    global _MOGHER_MP3_LOADED
+    if not _MOGHER_MP3_LOADED:
+        with _MOGHER_LOCK:
+            if not _MOGHER_MP3_LOADED:
+                for src in (paths.ROOT / "data" / "raw" / "mogher_mp3.json",
+                            _mogher_mp3_map_path()):
+                    try:
+                        _MOGHER_MP3.update(json.loads(src.read_text("utf-8")))
+                    except Exception:
+                        pass
+                _MOGHER_MP3_LOADED = True
+    return _MOGHER_MP3
+
+
+def _mogher_learn(pairs: dict[str, str]) -> None:
+    m = _mogher_mp3_map()
+    new = {k: v for k, v in pairs.items() if k and v and m.get(k) != v}
+    if not new:
+        return
+    with _MOGHER_LOCK:
+        m.update(new)
+        try:
+            _mogher_mp3_map_path().write_text(
+                json.dumps(m, ensure_ascii=False, sort_keys=True), "utf-8")
+        except Exception as e:
+            log.info("could not persist mogher mp3 map: %s", e)
+
+
+def parse_mogher_char_page(html: str) -> list[tuple[str, str, str]]:
+    """``[(pengim, type, mp3_file)]`` from a mogher character page, in page
+    order, de-duplicated by reading (the first badge wins). ``mp3_file`` is
+    ``""`` for a reading mogher lists without a recording."""
+    m = _MOGHER_ROW_RE.search(html)
+    if not m:
+        return []
+    out, seen = [], set()
+    for _, attrs, inner in _MOGHER_CHIP_RE.findall(m.group(1)):
+        inner = re.sub(r"<svg.*?</svg>", "", inner, flags=re.S)
+        words = re.sub(r"<[^>]+>", " ", inner).split()
+        if not words or not re.fullmatch(r"[a-zê]+\d", words[0]):
+            continue
+        rd = words[0]
+        ty = words[1] if len(words) > 1 and words[1] in "文白训俗" else ""
+        a = _MOGHER_AUDIO_ATTR_RE.search(attrs)
+        if rd in seen:
+            continue
+        seen.add(rd)
+        out.append((rd, ty, a.group(1) if a else ""))
+    return out
 
 
 def _mogher_char_parse(ch: str) -> list[tuple[str, str]]:
-    """``[(pengim, type)]`` mogher lists for one character, type ∈ 文/白/训/''.
-    Queries the SIMPLIFIED form (mogher's index) and disk-caches under it."""
-    import requests
+    """``[(pengim, type)]`` mogher lists for one character, type ∈ 文/白/训/俗/''.
+    Queries the SIMPLIFIED form (mogher's index) and disk-caches under it; the
+    recordings' file names are learnt into the syllable→mp3 map on the way."""
     q = t2s_text(ch)
-    p = _tts_cache_path(q, "readings-typed", "mogher").with_suffix(".txt")
+    p = _tts_cache_path(q, "readings-typed-v2", "mogher").with_suffix(".txt")
     if p.exists():
         t = p.read_text("utf-8").strip()
-        out = []
+        out, learn = [], {}
         for x in (t.split(",") if t else []):
-            rd, _, ty = x.partition("|")
+            rd, ty, mp3 = (x.split("|") + ["", ""])[:3]
             if rd:
                 out.append((rd, ty))
+                if mp3:
+                    learn[rd] = mp3
+        if learn and any(_mogher_mp3_map().get(k) != v for k, v in learn.items()):
+            _mogher_learn(learn)
         return out
-    r = requests.get(MOGHER_CHAR_URL.format(q), timeout=30)
-    pairs, seen = [], set()
-    if r.ok:
-        for rd, ty in _MOGHER_READING_RE.findall(r.text):
-            if rd not in seen:
-                seen.add(rd)
-                pairs.append((rd, ty or ""))
-        p.write_text(",".join(f"{rd}|{ty}" for rd, ty in pairs), "utf-8")
-    return pairs
+    try:
+        r = _mogher_get(MOGHER_CHAR_URL.format(q))
+    except MogherUnavailable:
+        # offline: an old-format (pre-redesign) cache entry still has the
+        # readings + types, just not the mp3 names
+        old = _tts_cache_path(q, "readings-typed", "mogher").with_suffix(".txt")
+        t = old.read_text("utf-8").strip() if old.exists() else ""
+        if t:
+            return [(rd, ty) for rd, _, ty in (x.partition("|") for x in t.split(","))
+                    if rd]
+        raise
+    if not r.ok:
+        return []
+    parsed = parse_mogher_char_page(r.text)
+    _mogher_learn({rd: mp3 for rd, _, mp3 in parsed if mp3})
+    p.write_text(",".join(f"{rd}|{ty}|{mp3}" for rd, ty, mp3 in parsed), "utf-8")
+    return [(rd, ty) for rd, ty, _ in parsed]
+
+
+def mogher_prefetch(chars, workers: int = _MOGHER_WORKERS) -> None:
+    """Warm the per-character mogher cache for many characters at once
+    (parallel; failures ignored) — a passage needs one page per distinct char,
+    and doing them one by one was the reader's multi-minute wait."""
+    todo = [c for c in dict.fromkeys(chars) if looks_like_hanzi(c)]
+    todo = [c for c in todo if not _tts_cache_path(
+        t2s_text(c), "readings-typed-v2", "mogher").with_suffix(".txt").exists()]
+    if not todo or not mogher_available():
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(c):
+        if not mogher_available():       # breaker tripped mid-batch: stop
+            return
+        try:
+            _mogher_char_parse(c)
+        except Exception:
+            pass
+    with ThreadPoolExecutor(max_workers=min(workers, len(todo))) as ex:
+        list(ex.map(one, todo))
 
 
 def mogher_char_readings(ch: str) -> list[str]:
@@ -1787,13 +1944,11 @@ def teochew_tailo_matched_tokens(data, dialect, s, alt, kip):
 # next best thing is mogher.com — the 潮州音字典, Chaozhou-city standard —
 # which serves one native recording per syllable+tone. Its mp3 file names
 # use mogher's own POJ-ish spelling (zu1 → tsu1.mp3, suan2 → sua~2.mp3),
-# NOT Peng'im, and guessing collides with other syllables (Peng'im gai7
-# would fetch their [g]- initial file), so each syllable's dictionary page
-# /dic/czpy/<pengim> is scraped once for the authoritative file name; the
-# mp3 is then disk-cached like the other TTS audio.
-MOGHER_PAGE_URL = "https://www.mogher.com/dic/czpy/{}"
+# NOT Peng'im. The authoritative file name comes from the character page
+# (each reading chip names its own recording — see _mogher_char_parse);
+# pengim_to_mogher_file is only the fallback for syllables no page has
+# named yet. The mp3 is then disk-cached like the other TTS audio.
 MOGHER_SOUND_URL = "https://www.mogher.com/sound/syllabes/{}"
-_MOGHER_MP3_RE = re.compile(r"sound/syllabes/([^\"'<>]+?\.mp3)")
 
 
 def _mogher_variants(syl: str):
@@ -1816,33 +1971,92 @@ def _mogher_variants(syl: str):
     return out
 
 
+# Peng'im → mogher's own POJ-style mp3 spelling, for syllables no parsed
+# character page has named yet (e.g. a sandhi-tone target). Derived from the
+# file names mogher itself serves: tin1→thi~1, zêg8→tsek8, se1→sur1,
+# ceng5→tshurng5, kui3→khui3, haon3→hau~3, ri6→ji6.
+_PENGIM_INITIAL_TO_MOGHER = (("bh", "b"), ("gh", "g"), ("ng", "ng"),
+                             ("b", "p"), ("p", "ph"), ("d", "t"), ("t", "th"),
+                             ("g", "k"), ("k", "kh"), ("z", "ts"), ("c", "tsh"),
+                             ("r", "j"), ("m", "m"), ("n", "n"), ("l", "l"),
+                             ("h", "h"), ("s", "s"))
+
+
+def pengim_to_mogher_file(syl: str) -> str | None:
+    m = re.fullmatch(r"([a-zê]+?)(\d)", syl or "")
+    if not m:
+        return None
+    s, tone = m.group(1), m.group(2)
+    ini = ""
+    for a, b in _PENGIM_INITIAL_TO_MOGHER:
+        # syllabic ng/m (ng5, m6) are finals, not initials
+        if s.startswith(a) and len(s) > len(a) and s[len(a)] not in "0123456789":
+            ini, s = b, s[len(a):]
+            break
+    nasal = False
+    if s.endswith("n") and not s.endswith("ng") and len(s) > 1:
+        s, nasal = s[:-1], True                 # Peng'im -n = nasalised vowel
+    elif s.endswith("nh") and len(s) > 2:
+        s, nasal = s[:-2] + "h", True
+    s = re.sub(r"g$", "k", s) if not s.endswith("ng") else s
+    s = re.sub(r"b$", "p", s)
+    s = s.replace("ao", "au")
+    # Peng'im e = [ɯ] (mogher "ur") when it is the lone vowel; inside ie/eu/ue
+    # clusters it is plain e, and ê is always e.
+    s = re.sub(r"(?<![aiouê])e(?![aiouê])", "ur", s).replace("ê", "e")
+    return f"{ini}{s}{'~' if nasal else ''}{tone}.mp3"
+
+
+def _mogher_download(fname: str) -> bytes | None:
+    try:
+        a = _mogher_get(MOGHER_SOUND_URL.format(fname))
+    except MogherUnavailable:
+        return None                              # transient — retry later
+    if a.ok and len(a.content) > 512 and (
+            a.content.startswith(b"ID3") or a.content[:1] == b"\xff"):
+        return a.content
+    if a.status_code in (404, 410) or a.ok:
+        return b""                               # definitive: no such recording
+    return None                                  # transient — retry later
+
+
 def _mogher_fetch(syl: str) -> bytes | None:
     """One mogher.com recording for an EXACT Peng'im syllable+tone, or
-    ``None`` when it (and its spelling variants) isn't recorded. Both hits
-    and confirmed misses are disk-cached to spare the network; a transient
-    download failure is not cached, so it can be retried later."""
-    import requests
+    ``None`` when it (and its spelling variants) isn't recorded. The file
+    name comes from the syllable→mp3 map learnt from character pages, else
+    from ``pengim_to_mogher_file``. Hits and confirmed misses are
+    disk-cached; a transient download failure stays retryable."""
     p = _tts_cache_path(syl, "nan-teochew", "mogher")
-    miss = p.with_suffix(".miss")
+    miss = p.with_suffix(".miss2")
     if p.exists():
         return p.read_bytes()
     if miss.exists():
         return None
-    saw_page = False
-    for v in _mogher_variants(syl):
-        r = requests.get(MOGHER_PAGE_URL.format(v), timeout=30)
-        m = _MOGHER_MP3_RE.search(r.text) if r.ok else None
-        if not m:
-            continue
-        saw_page = True                  # mogher lists a recording for it
-        a = requests.get(MOGHER_SOUND_URL.format(m.group(1)), timeout=30)
-        if a.ok and len(a.content) > 512 and (
-                a.content.startswith(b"ID3") or a.content[:1] == b"\xff"):
-            p.write_bytes(a.content)
-            return a.content
-    if not saw_page:                     # pages answered, just no recording
-        miss.touch()                     # (a failed download stays retryable)
+    known = _mogher_mp3_map()
+    names = [known[v] for v in _mogher_variants(syl) if v in known]
+    guess = pengim_to_mogher_file(syl)
+    if guess:
+        names.append(guess)
+    definitive = True
+    for fname in dict.fromkeys(names):
+        got = _mogher_download(fname)
+        if got:
+            p.write_bytes(got)
+            return got
+        if got is None:
+            definitive = False
+    if definitive:
+        miss.touch()
     return None
+
+
+def mogher_has_recording(syl: str) -> bool:
+    """Cheap check (no download) that mogher has a recording for ``syl``:
+    a cached mp3, or a file name learnt from a character page."""
+    if _tts_cache_path(syl, "nan-teochew", "mogher").exists():
+        return True
+    known = _mogher_mp3_map()
+    return any(v in known for v in _mogher_variants(syl))
 
 
 def teochew_syllable_mp3(syl: str) -> bytes:
@@ -1924,12 +2138,9 @@ def teochew_voiced_reading(ch: str, reading: str, literary: bool = False) -> str
     ``t͡sʰɯŋ55`` → mogher ``ceng5``), which otherwise silence the whole line.
     ``literary`` selects 文讀 recitation (see ``_teochew_reading_candidates``)."""
     cands = _teochew_reading_candidates(ch, reading, literary)
-    for c in cands:
-        try:
-            if _mogher_fetch(c) is not None:
-                return c
-        except Exception:
-            pass
+    for c in cands:                       # no download: the char page already
+        if mogher_has_recording(c):       # named each reading's recording
+            return c
     return cands[0] if cands else reading
 
 
@@ -2037,12 +2248,19 @@ def teochew_phrase_mp3(pairs, spoken: bool) -> tuple[bytes | None, list[str]]:
     units = _teochew_audio_units(pairs, spoken)
     if not units:
         return None, []
-    frames, missing = [], []
-    for ch, tok, sandhi in units:
+    mogher_prefetch([ch for ch, _, _ in units])
+
+    def one(u):
+        ch, tok, sandhi = u
         try:
-            frames.append(_mp3_frames(_teochew_unit_mp3(ch, tok, sandhi)))
-        except RuntimeError:
-            missing.append(ch)
+            return ch, _mp3_frames(_teochew_unit_mp3(ch, tok, sandhi))
+        except Exception:
+            return ch, None
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(_MOGHER_WORKERS, len(units))) as ex:
+        got = list(ex.map(one, units))           # order preserved
+    frames = [f for _, f in got if f]
+    missing = [ch for ch, f in got if not f]
     return (b"".join(frames) if frames else None), missing
 
 
