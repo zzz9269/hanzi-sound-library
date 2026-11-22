@@ -507,6 +507,7 @@ def _alts(val):
 
 
 MAX_ROMS = 6
+CHANGED_TONE = re.compile(r"[a-z]+\d-\d")   # Jyutping 變音: jip6-2
 
 
 def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
@@ -535,6 +536,10 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
         ds_roms = list(roms)                     # the dataset's own (pre-Wiktionary)
         if rom_w:
             roms = [(r.strip(), False) for r in rom_w.split(" / ") if r.strip()]
+            # Cantonese changed tones (變音, "jip6-2") are word-bound: Wiktionary's
+            # zh-pron lists them without saying which words, so a bare
+            # "jip6-2" chip reads like a second pronunciation. Leave them out.
+            roms = [(r, ml) for r, ml in roms if not CHANGED_TONE.fullmatch(r)] or roms
             wik[colidx[col]] = 1
         # every reading, not just the main one: the dataset keeps a single
         # pinyin/jyutping per character (長 had zhǎng but not cháng)
