@@ -50,12 +50,13 @@ def test_teochew_class_to_contour():
     assert ak.tones_to_chao("tiang1", "Teochew") == "tiang˧˧"
 
 
-def test_haikou_mcpdict_categories():
-    assert ak.tones_to_chao("hi1 | hin1", "Hainanese (Haikou)") == "hi˨˦ | hin˨˦"
-    # 9 = MCPDict 長入 (long entering) → 55
-    assert ak.tones_to_chao("ke9", "dial:Min-Haikou") == "ke˥˥"
-    # ML tag must survive
-    assert ak.tones_to_chao("hin1[ML]", "dial:Min-Haikou") == "hin˨˦[ML]"
+def test_haikou_now_arrives_as_chao():
+    # MCPDict class digits are mapped to contours at INGEST (per-table 調值),
+    # so the display layer just passes Haikou's Chao letters through
+    assert ak.tones_to_chao("hi˨˧ | hin˨˧", "Hainanese (Haikou)") == "hi˨˧ | hin˨˧"
+    assert ak.tones_to_chao("ɓi˨˧[ML]", "dial:Min-Haikou") == "ɓi˨˧[ML]"
+    # a stray ASCII contour inside IPA (incl. after a combining mark) converts
+    assert ak.tones_to_chao("tɛ̃55", "dial:Wu-Shanghai") == "tɛ̃˥˥"
 
 
 # --------------------------------------- category superscripts stay digits --
@@ -94,8 +95,8 @@ def test_chao_html_wraps_and_escapes():
 def test_render_readings_html_converts_and_tags_ml():
     out = ak.render_readings_html("tin1 | tʰiːn˥", "Cantonese")
     assert "tin" in out and "˥˥" in out
-    out_ml = ak.render_readings_html("hin1[ML]", "dial:Min-Haikou")
-    assert "˨˦" in out_ml and "ML" in out_ml
+    out_ml = ak.render_readings_html("sam3[ML]", "Cantonese")
+    assert "˧˧" in out_ml and "ML" in out_ml
 
 
 def test_has_ipa():
@@ -125,6 +126,5 @@ def test_build_reading_index_tokens_and_tone_stripping():
 def test_plain_ascii_multidigit_contour_converts():
     # dial-pron stores some contours as plain ASCII with no IPA marker
     assert ak.tones_to_chao("pin13", "dial:Xiang-Changsha") == "pin˩˧"
-    # single class digits stay (Jyutping/Haikou/Tunxi semantics)
+    # a single digit on a plain romanisation is a class → stays
     assert ak.tones_to_chao("hi1", None) == "hi1"
-    assert ak.tones_to_chao("tsɿ1", "dial:Hui-Tunxi") == "tsɿ1"

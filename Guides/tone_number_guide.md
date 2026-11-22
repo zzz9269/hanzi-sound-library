@@ -17,7 +17,7 @@ The sourced romanisations write only the tone **class**, in one of three ways,
 and the app converts that class to its citation pitch contour:
 
 * a **trailing digit** — Cantonese Jyutping `tin1`, Teochew Peng'im `lung2`,
-  Haikou `hi1`, Gan `nyiin3`, Xiang `ren3`, Jin `reng2` — the digit is replaced
+  Gan `nyiin3`, Xiang `ren3`, Jin `reng2` — the digit is replaced
   by the contour letters in the displayed chip too (`tin˥˥`);
 * a **leading digit** — Wu Wugniu `6gnin` (moved to the end: `gnin˨˧`);
 * an **accent over the vowel** — Hokkien POJ `lím`, Hakka PFS `ngiûn`, Eastern
@@ -63,8 +63,9 @@ tone, and is ignored.)
 | 9 | — | — | — | 55· | — | — | — | — | — | — |
 
 Cantonese Jyutping's checked (入聲) syllables reuse digits 1/3/6, whose level
-contours are already correct. Haikou follows MCPDict's category digits (odd =
-陰, even = 陽; no class 4 — 陽上 merged; 9 = the long entering 長入).
+contours are already correct. The Hainanese column is reference only: Haikou
+readings are now stored as IPA with Chao letters (converted at build time from
+MCPDict's category digits — odd = 陰, even = 陽, 9 = the long entering 長入).
 
 `·` marks a **checked / entering** (入聲) tone — short and stop-final. Empty cells
 mean that lect has no tone in that historical class (mergers vary): Shanghai folds

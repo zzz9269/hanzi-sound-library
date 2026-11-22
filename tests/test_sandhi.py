@@ -6,6 +6,8 @@ the group-final syllable keeps citation; non-Hanzi input characters split
 groups. Hokkien local readings are IPA (tone = Chao contour + coda),
 Teochew readings are Peng'im (tone = trailing class digit).
 """
+import pytest
+
 from hanzihub import appkit as ak
 
 
@@ -191,6 +193,201 @@ def test_teochew_audio_plan_none_when_reading_missing():
 def test_teochew_sandhi_audio_map_is_total_and_valid():
     assert set(ak._TEOCHEW_SANDHI_AUDIO) == set("12345678")
     assert set(ak._TEOCHEW_SANDHI_AUDIO.values()) <= set("12345678")
+
+
+def _patch_mogher(monkeypatch, pairs):
+    """Patch mogher's per-character parse (readings + 文/白/训 type). Accepts a
+    list of ``reading`` strings (untyped) or ``(reading, type)`` tuples."""
+    parsed = [p if isinstance(p, tuple) else (p, "") for p in pairs]
+    monkeypatch.setattr(ak, "_mogher_char_parse", lambda ch: parsed)
+
+
+def test_mogher_reading_for_uses_mogher_primary(monkeypatch):
+    # our Peng'im disagrees with mogher's spelling; the character lookup bridges
+    # it (single-reading chars just resolve to mogher's spelling)
+    readings = {"霜": ["seng1"], "明": ["mêng5"], "望": ["mo7", "bhuang6"]}
+    monkeypatch.setattr(ak, "_mogher_char_parse",
+                        lambda ch: [(r, "") for r in readings.get(ch, [])])
+    assert ak.mogher_reading_for("霜", "sng1") == "seng1"
+    assert ak.mogher_reading_for("明", "meng5") == "mêng5"
+    # polyphone: take mogher's FIRST-listed reading (primary/most-common),
+    # regardless of which one our own seed happens to be
+    assert ak.mogher_reading_for("望", "mo7") == "mo7"
+    assert ak.mogher_reading_for("望", "bhuang6") == "mo7"
+    # character mogher doesn't list → None (caller keeps our own reading)
+    assert ak.mogher_reading_for("〇", "ho2") is None
+
+
+def test_teochew_reading_avoids_sudu_slang(monkeypatch):
+    # 一: 俗 ieu1 (slang) + 文 ig4 + 训 zêg8 (the everyday 'one', 一起 = zêg8-ki).
+    # Natural keeps the everyday 训读 zêg8 and NEVER the 俗讀; 文讀 mode picks ig4.
+    # 俗讀 is demoted below both standard readings either way.
+    _patch_mogher(monkeypatch, [("ieu1", "俗"), ("ig4", "文"), ("zêg8", "训")])
+    c = ak._teochew_reading_candidates("一", "zek8")
+    assert c[0] == "zêg8"
+    assert c.index("ieu1") > c.index("ig4")           # 俗讀 sinks below 文
+    assert ak._teochew_reading_candidates("一", "zek8", literary=True)[0] == "ig4"
+
+
+def test_teochew_reading_seed_promotes_only_everyday_match(monkeypatch):
+    # 氣: our seed ki3 IS the 文 reading; natural must NOT promote the 白 kui3
+    # (shares tone+initial but is a different rime) — take mogher's first, ki3.
+    _patch_mogher(monkeypatch, [("ki3", "文"), ("kui3", "白")])
+    assert ak._teochew_reading_candidates("氣", "ki3")[0] == "ki3"
+    # 一: seed zek8 names the everyday 训 reading, spelled zêg8 by mogher —
+    # fuzzy match still promotes it over the literary ig4.
+    _patch_mogher(monkeypatch, [("ieu1", "俗"), ("ig4", "文"), ("zêg8", "训")])
+    assert ak._teochew_reading_candidates("一", "zek8")[0] == "zêg8"
+
+
+def test_pengim_norm_matches_romanisation_variants():
+    assert ak._pengim_norm("zek8") == ak._pengim_norm("zêg8")   # ê/e + k/g coda
+    assert ak._pengim_norm("ki3") != ak._pengim_norm("kui3")    # different rime
+
+
+def test_teochew_reading_everyday_vs_literary(monkeypatch):
+    # 食: ziah8 白 (eat, everyday) vs sig8 文 (literary). And 二: no6 训 (everyday
+    # 'two things') vs ri6/ri7 文. Natural → the everyday {白,训}; 文讀 → 文.
+    _patch_mogher(monkeypatch, [("ziah8", "白"), ("sig8", "文")])
+    assert ak._teochew_reading_candidates("食", "ziah8")[0] == "ziah8"
+    assert ak._teochew_reading_candidates("食", "ziah8", literary=True)[0] == "sig8"
+    _patch_mogher(monkeypatch, [("no6", "训"), ("ri6", "文"), ("ri7", "文")])
+    assert ak._teochew_reading_candidates("二", "no6")[0] == "no6"
+    assert ak._teochew_reading_candidates("二", "no6", literary=True)[0] in ("ri6", "ri7")
+
+
+def test_teochew_unit_mp3_uses_mogher_own_spelling(monkeypatch):
+    _patch_mogher(monkeypatch, ["seng1"])
+    fetched = {}
+    monkeypatch.setattr(ak, "_mogher_fetch",
+                        lambda syl: fetched.setdefault(syl, b"\xff\xfbX"))
+    # citation 霜: our sng1 is never requested — mogher's seng1 is
+    ak._teochew_unit_mp3("霜", "sng1", sandhi=False)
+    assert "seng1" in fetched and "sng1" not in fetched
+
+
+def test_teochew_unit_mp3_sandhi_falls_back_to_citation(monkeypatch):
+    _patch_mogher(monkeypatch, ["ho2"])
+    # mogher has citation ho2 but not the sandhi-tone ho6 → speak ho2, same
+    # syllable, never a different one
+    monkeypatch.setattr(ak, "_mogher_fetch",
+                        lambda syl: b"\xff\xfbHO2" if syl == "ho2" else None)
+    assert ak._teochew_unit_mp3("好", "ho2", sandhi=True) == b"\xff\xfbHO2"
+
+
+def test_teochew_unit_mp3_walks_to_a_recorded_reading(monkeypatch):
+    # 思: mogher lists se1 first (matches our su1) but only RECORDED si1;
+    # must fall through mogher's other readings rather than go silent
+    _patch_mogher(monkeypatch, ["se1", "se3", "si1", "sai1"])
+    monkeypatch.setattr(ak, "_mogher_fetch",
+                        lambda syl: b"\xff\xfbSI1" if syl == "si1" else None)
+    assert ak._teochew_unit_mp3("思", "su1", sandhi=False) == b"\xff\xfbSI1"
+
+
+def test_teochew_unit_mp3_falls_back_to_our_own_reading(monkeypatch):
+    # mogher lists a reading but records NONE of them; our own reading is the
+    # last-resort candidate so audio still plays when it happens to be recorded
+    _patch_mogher(monkeypatch, ["se1"])
+    monkeypatch.setattr(ak, "_mogher_fetch",
+                        lambda syl: b"\xff\xfbSU1" if syl == "su1" else None)
+    assert ak._teochew_unit_mp3("思", "su1", sandhi=False) == b"\xff\xfbSU1"
+
+
+def test_teochew_unit_mp3_raises_when_nothing_recorded(monkeypatch):
+    _patch_mogher(monkeypatch, ["se1"])
+    monkeypatch.setattr(ak, "_mogher_fetch", lambda syl: None)
+    with pytest.raises(RuntimeError):
+        ak._teochew_unit_mp3("思", "su1", sandhi=False)
+
+
+def test_teochew_voiced_reading_shows_what_it_plays(monkeypatch):
+    _patch_mogher(monkeypatch, ["se1", "si1", "sai1"])
+    monkeypatch.setattr(ak, "_mogher_fetch",
+                        lambda syl: b"\xff\xfbX" if syl == "si1" else None)
+    # top pick se1 is unrecorded → show the recorded si1 (what audio plays),
+    # never one thing read and another heard
+    assert ak.teochew_voiced_reading("思", "su1") == "si1"
+
+
+def test_teochew_voiced_reading_rescues_ipa_entry(monkeypatch):
+    # 床's stored reading is IPA, not Peng'im; mogher's ceng5 is shown+voiced
+    _patch_mogher(monkeypatch, ["ceng5"])
+    monkeypatch.setattr(ak, "_mogher_fetch",
+                        lambda syl: b"\xff\xfbX" if syl == "ceng5" else None)
+    assert ak.teochew_voiced_reading("床", "t͡sʰɯŋ55") == "ceng5"
+
+
+def test_teochew_voiced_reading_falls_back_when_nothing_recorded(monkeypatch):
+    _patch_mogher(monkeypatch, ["ceng5"])
+    monkeypatch.setattr(ak, "_mogher_fetch", lambda syl: None)
+    # nothing recorded → still return mogher's top reading (display), audio
+    # branch will just report unavailable
+    assert ak.teochew_voiced_reading("床", "t͡sʰɯŋ55") == "ceng5"
+
+
+def test_teochew_node_reading_is_mogher_primary(monkeypatch):
+    # the evolution-tree Teochew node must read from mogher (like the panel row
+    # + phrase sandhi), NOT Wiktionary — EVERY reading mogher lists, incl. 俗讀,
+    # each as Chao Peng'im. 俗讀 (ka7) is kept but demoted below 文/白, even
+    # though mogher lists it FIRST.
+    _patch_mogher(monkeypatch, [("ka7", "俗"), ("gieh4", "白"),
+                                ("gag4", "文"), ("giog4", "白")])
+    got = ak.teochew_node_reading("腳")
+    assert got == " ".join(ak.wikt_rom_to_chao(r, "teochew")
+                           for r in ("gieh4", "gag4", "giog4", "ka7"))
+
+
+def test_teochew_node_reading_empty_when_mogher_silent(monkeypatch):
+    # mogher lists nothing → '' so the tree falls back to Wiktionary / dataset
+    _patch_mogher(monkeypatch, [])
+    assert ak.teochew_node_reading("〇") == ""
+
+
+def test_teochew_phrase_mp3_skips_uncovered_chars(monkeypatch):
+    # 蕭 isn't in mogher's dictionary at all → skip it and voice the rest,
+    # rather than silencing the whole line; report it in `missing`
+    def fake_unit(ch, tok, sandhi):
+        if ch == "蕭":
+            raise RuntimeError("no recording")
+        return b"\xff\xfb" + ch.encode()
+    monkeypatch.setattr(ak, "_teochew_unit_mp3", fake_unit)
+    monkeypatch.setattr(ak, "_mp3_frames", lambda b: b)
+    pairs = [("雨", "u2"), ("蕭", "siau1"), ("歇", "hiah4")]
+    mp3, missing = ak.teochew_phrase_mp3(pairs, spoken=False)
+    assert missing == ["蕭"]
+    assert mp3 == b"\xff\xfb" + "雨".encode() + b"\xff\xfb" + "歇".encode()
+
+
+def test_teochew_phrase_mp3_none_when_nothing_voiced(monkeypatch):
+    monkeypatch.setattr(ak, "_teochew_unit_mp3",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError()))
+    mp3, missing = ak.teochew_phrase_mp3([("蕭", "siau1")], spoken=False)
+    assert mp3 is None and missing == ["蕭"]
+
+
+def test_t2s_text_maps_traditional_to_simplified_for_mogher():
+    # mogher is indexed by simplified hanzi; the query form must be simplified
+    assert ak.t2s_text("髮") == "发"
+    assert ak.t2s_text("蕭") == "萧"
+    assert ak.t2s_text("发") == "发"   # already simplified → unchanged
+
+
+def test_mogher_char_readings_queries_simplified(monkeypatch):
+    seen = {}
+    class R:
+        ok = True
+        text = ('<a href="/dic/czpy/huêg4"> huêg4 '
+                '<label class="label label-primary wendu-label">文</label></a>')
+    def fake_get(url, timeout=0):
+        seen["url"] = url
+        return R()
+    monkeypatch.setattr(ak, "_tts_cache_path",
+                        lambda *a: __import__("pathlib").Path(
+                            __import__("tempfile").mkdtemp()) / "x")
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert ak.mogher_char_readings("髮") == ["huêg4"]
+    assert seen["url"].endswith("/发")   # queried the simplified form
 
 
 def test_mogher_variants_cover_chaozhou_shantou_vowels():

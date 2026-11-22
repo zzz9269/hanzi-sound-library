@@ -50,12 +50,80 @@ def collect_records(*, use_wiktionary: bool = True,
     recs += ytenx_oc.load()
     recs += qieyun_mc.load()
     recs += kaikki.load()       # locality IPA (no-op until the cache is built)
-    recs += mcpdict.load()      # Haikou (Hainanese) + Shexian (Hui)
+    recs += mcpdict.load()      # 漢字音典 locality tables + Sino-Xenic + 廣韻
     recs += okinawan.load()     # Okinawan (Ryukyuan) kanji readings
     if use_wiktionary:
         recs += wiktionary_dialpron.load(refresh=refresh_wiktionary,
                                          limit=limit_wiktionary)
-    return recs
+    harmonize_fallback_tones(recs)
+    return apply_fallbacks(recs)
+
+
+_CHAO_TAIL = re.compile(r"[˥˦˧˨˩]+$")
+HARMONIZE_MIN_N = 8        # shared chars needed per tone class
+HARMONIZE_MIN_SHARE = 0.6  # majority needed before the contour is adopted
+
+
+def harmonize_fallback_tones(recs: list[dict], *, verbose: bool = False) -> dict:
+    """Render gap-fill readings' tones in the column's own convention.
+
+    A gap-fill table (MCPDict) and the column's primary source (kaikki /
+    Wiktionary) can describe the same tone CATEGORY with different citation
+    values (Changsha 陰平 ˧˧ vs ˧˧˦, Fuzhou 上聲 ˧˧ vs ˧˩). The category is
+    reliable, so per (column, tone class) we look at the characters both
+    sources share and, if the primary source clearly agrees on one contour for
+    that class (≥ ``HARMONIZE_MIN_N`` chars, ≥ ``HARMONIZE_MIN_SHARE``), the
+    gap-fill readings of that class take it — the column then reads
+    consistently. Classes without clear evidence keep MCPDict's own value.
+    Mutates ``recs`` in place; returns ``{column: {class: contour}}``."""
+    from collections import Counter
+
+    primary_tones: dict[tuple[str, str], set[str]] = defaultdict(set)
+    fb_classes: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for r in recs:
+        key = (r["column"], r["char"])
+        if r.get("fallback"):
+            if r.get("tone_class") is not None:
+                fb_classes[key].add(r["tone_class"])
+        elif r["column"].startswith("dial:"):
+            for part in re.split(r"[/|]", normalize_reading(r["reading"], r["column"])):
+                m = _CHAO_TAIL.search(part.strip())
+                if m:
+                    primary_tones[key].add(m.group(0))
+
+    votes: dict[str, dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
+    for key, classes in fb_classes.items():
+        pt = primary_tones.get(key)
+        if pt and len(pt) == 1 and len(classes) == 1:   # unambiguous pairs only
+            votes[key[0]][next(iter(classes))][next(iter(pt))] += 1
+
+    mapping: dict[str, dict[str, str]] = {}
+    for col, by_cls in votes.items():
+        for cls, cnt in by_cls.items():
+            n = sum(cnt.values())
+            tone, k = cnt.most_common(1)[0]
+            if n >= HARMONIZE_MIN_N and k / n >= HARMONIZE_MIN_SHARE:
+                mapping.setdefault(col, {})[cls] = tone
+
+    for r in recs:
+        if not r.get("fallback") or r.get("tone_class") is None:
+            continue
+        tone = mapping.get(r["column"], {}).get(r["tone_class"])
+        if tone:
+            r["reading"] = _CHAO_TAIL.sub(tone, r["reading"])
+    if verbose:
+        for col, m in sorted(mapping.items()):
+            print(f"[harmonize] {col}: {m}")
+    return mapping
+
+
+def apply_fallbacks(recs: list[dict]) -> list[dict]:
+    """Drop gap-fill records (``fallback=True``) for any (char, column) that a
+    primary source already covers, so a cell never mixes two transcriptions
+    of the same place / reading system."""
+    primary = {(r["char"], r["column"]) for r in recs if not r.get("fallback")}
+    return [r for r in recs
+            if not r.get("fallback") or (r["char"], r["column"]) not in primary]
 
 
 # --- ingest normalisation -------------------------------------------------

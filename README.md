@@ -1,86 +1,107 @@
 # 漢字音庫 — Hanzi Sound Library
 
 A multilingual lookup tool for the pronunciations of Han characters across the
-**Sinitic languages** (Mandarin, Cantonese, the Min/Wu/Hakka/Gan/Xiang/Jin
-topolects, Middle & Old Chinese reconstructions) plus the wider Sinosphere
-(Japanese, Korean, Vietnamese). The dataset is built by the `hanzihub` package.
+**Sinitic languages** (Mandarin, Cantonese, Hokkien, Teochew, Fuzhou, Jian'ou,
+Hainanese, Hakka, Wu, Hui, Gan, Xiang, Jin), their **historical layers** (Old
+Chinese, Middle Chinese, Tang, a reconstructed Proto-Min) and the wider
+Sinosphere (Japanese, Okinawan, Korean, Vietnamese). The dataset is built by
+the `hanzihub` package; the front-end is a Streamlit app (`app.py`).
 
-## Running the app
+## Use it on your phone
 
-```bash
+The app is a Streamlit site, so the simplest "phone app" is a free
+[Streamlit Community Cloud](https://share.streamlit.io) deployment pinned to
+your home screen:
+
+1. Push this repository to GitHub (public or private both work).
+2. On share.streamlit.io → **Create app** → pick the repo, branch `main`,
+   main file `app.py`. Under *Advanced settings* choose Python 3.12.
+3. *(Optional — enables Google TTS + translation)* In the app's
+   **Settings → Secrets**, paste the `[gcp_service_account]` block from
+   [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example)
+   filled with your service-account key's fields. Without it every reading
+   still shows; only Google audio/translation are off (Hokkien and Teochew
+   audio come from free public services and work regardless).
+4. Open the app URL on your phone → browser menu → **Add to Home Screen**.
+   It then launches full-screen like an app.
+
+Keep the app's sharing setting **private** (only you) if Google credentials
+are configured, so nobody else can spend your TTS/translation quota. Note the
+hosted filesystem is ephemeral: the 📊 Progress / 🔄 Review study history
+(`cache/progress.db`) resets whenever Streamlit restarts the app.
+
+The committed `data/out/*.parquet` files *are* the dataset — the hosted app
+needs no build step.
+
+## Running locally
+
+```powershell
 pip install -r requirements.txt
 streamlit run app.py          # opens the lookup UI in your browser
 ```
 
-The Streamlit UI (`app.py`, logic in `hanzihub/appkit.py` + `hanzihub/scrapers.py`)
-shows per-topolect IPA with a **rough English approximation**, machine-predicted
-readings flagged `🤖 ML`, a collapsible locality layer (~55 points), per-reading
-provenance, TTS for Mandarin/Cantonese/Japanese/Korean/Vietnamese, a per-character
-**glyph-origin** panel (Wiktionary historical forms + etymology, fetched on
-demand and disk-cached), and live JapanDict / koreanhanja / Nôm lookups. (The
-original `漢字音庫_v9.ipynb` notebook remains as a legacy front-end.)
+(`launch_app.bat` does the same with a fixed interpreter path.)
+
+The UI shows per-topolect IPA with a **rough English approximation**,
+machine-predicted readings flagged `🤖 ML`, a collapsible locality layer
+(~75 points), per-reading provenance, TTS (Google voices for Mandarin /
+Cantonese / Japanese / Korean / Vietnamese; ithuan.tw for Taiwanese Hokkien;
+stitched mogher.com recordings for Chaozhou Teochew), a **glyph-origin** panel,
+the full Wiktionary entry, a 📖 passage reader with per-word ruby readings in
+any variety, a 🎋 classical-poetry library with recite mode, and quiz /
+spaced-repetition review.
 
 Notable engine features:
 
 * **Unified Chao tone letters** — every pitch contour displays as tone letters
-  (`tin˥˥`, `tʰieŋ˥˥`); tone-*class* digits (Jyutping/Peng'im/Haikou/Wugniu)
-  are mapped through per-scheme citation-contour tables; tone-*category*
+  (`tin˥˥`, `tʰieŋ˥˥`); tone-*class* digits (Jyutping / Peng'im / Wugniu) are
+  mapped through per-scheme citation-contour tables; tone-*category*
   superscripts (Proto-Min `*tʰin¹`, Baxter MC `tʰen¹`) are deliberately left
   as numbers. See Guides → Tone contour guide.
-* **Sound-evolution tree with per-character sound laws** — hover a branch node
-  to see which regular changes (入聲 loss/retention, 全濁 devoicing reflexes,
-  palatalisation, Min pre-split archaisms, Sino-Xenic coda adaptations)
-  applied to *this* character, derived from its 音韻地位 (`hanzihub/soundlaws.py`).
-* **反切 breakdown** — each fanqie spelling is decomposed with the speller
-  characters' own MC readings (他前 → `th-` + `-en` 平 → `then` ✓).
-* **Reading search** — type `tian`, `tin1`, `thien`, or even Baxter MC `then`
-  in the search box to find characters by any romanised reading.
-* **Min tone sandhi hints** — Hokkien (tone circle) and Teochew readings show
-  their non-final sandhi contour.
-* **Markdown export** — download a per-character report (readings, locality
-  layer, provenance).
+* **Sound-evolution tree with per-character sound laws** (`hanzihub/soundlaws.py`).
+* **反切 breakdown**, **reading search** (`tian`, `tin1`, `thien`, Baxter `then`),
+  **Min tone sandhi** (phrase level), **Markdown export**.
 
-Run the test suite with `python -m pytest tests` (fast, pure-function coverage
-of segmentation, tone display, approximations, fanqie, sound laws).
+Run the test suite with `python -m pytest tests` (needs
+`pip install -r requirements-build.txt`).
 
-## Architecture
+## Data sources (all aggregated with per-source provenance)
 
-```
-sources ──► hanzihub.merge ──► data/out/readings_long.parquet   (canonical, provenanced)
-                          └──► data/out/combined_readings.csv    (wide, app-facing)
-                                        │
-                          漢字音庫_v9.ipynb  (ipywidgets lookup UI)
-```
+| Source | Provides |
+|---|---|
+| Unihan `Unihan_Readings.txt` | Mandarin, Cantonese, Tang, Japanese, Korean, Vietnamese, Fanqie, Zhuang, definitions |
+| Baxter–Sagart 2014 xlsx | Old Chinese + Middle Chinese (transcription) |
+| `wikihan-ipa.tsv` | branch IPA (Yue/Gan/Hakka/Jin/Mandarin/Hokkien/Wu/Xiang) + MC Baxter IPA |
+| 客家話.xlsx / 潮州話.xlsx | Hakka / Teochew (Peng'im) |
+| ytenx (韻典網) | Old Chinese (Zhengzhang) IPA |
+| nk2028 qieyun-data (廣韻) | Fanqie + Middle Chinese rime position |
+| Wiktionary `dial-pron` | 39 canonical localities (~1k common chars) |
+| kaikki.org (machine-readable Wiktionary) | per-character locality IPA, ~45 points |
+| **漢字音典 / MCPDict** (`osfans/MCPDict`, commit-pinned) | ~50 locality tables transcribed from the published 音檔 / 方言志 references — every branch representative (太原, 南昌, 長沙, 建甌, 福州, 梅縣, 厦門, 汕頭/潮州, 上海, 海口, 歙縣) plus Hui (屯溪, 績溪), Min (臺北, 泉州, 漳州, 莆田, 雷州), Hakka, Wu, Yue and 16 Mandarin points; **Hán-Việt** readings (Vietnamese); Naver **Hanja** readings (Korean); Baxter MC transcription from 廣韻 |
+| kaikki.org Okinawan | Okinawan (Ryukyuan) kanji readings |
 
-### Data sources (all aggregated with per-source provenance)
+How sources combine: the **long table** (`readings_long.parquet`) stores one
+row per `(char, column, reading, source)` so every reading is auditable. The
+**wide table** (`combined_readings.parquet`) is derived from it: branch columns
+are gap-filled from their representative locality, and a full
+`dial:<branch>-<locality>` layer is appended. ML-imputed cells carry `[ML]`
+and never overwrite sourced data.
 
-| Source | Provides | Coverage |
-|---|---|---|
-| Unihan `Unihan_Readings.txt` | Mandarin, Cantonese, Tang, JP/KO/VI, Fanqie, Zhuang, definitions | ~40k chars |
-| Baxter–Sagart 2014 xlsx | Old Chinese + Middle Chinese (transcription) | ~5k |
-| `wikihan-ipa.tsv` | branch IPA (Yue/Gan/Hakka/Jin/Mandarin/Hokkien/Wu/Xiang) + MC Baxter IPA | ~30k |
-| 客家話.xlsx / 潮州話.xlsx | Hakka / Teochew | ~4–7k |
-| **ytenx (韻典網)** | Old Chinese (Zhengzhang) IPA | ~13k |
-| **nk2028 qieyun-data (廣韻)** | Fanqie + Middle Chinese rime position | ~19k |
-| **Wiktionary `dial-pron`** | 39 locality-level IPA readings incl. Min: Fuzhou/Jian'ou/Shantou/Haikou | ~1k common chars |
-| **kaikki.org** (machine-readable Wiktionary) | per-character locality IPA across ~45 points — Min Dong (Fuzhou), Min Bei (Jian'ou), Quanzhou/Zhangzhou/Taipei/Penang, Ningbo/Chongming, Taishan, the Hakka sub-lects, etc. | ~17.6k chars |
-| **漢字音典 / MCPDict** (`osfans/MCPDict`) | Haikou (Hainanese) + Hui (Shexian), and since 2026-07 Suzhou, Wenzhou, Pingyao, Tunxi, Xiangtan, Nanning + **Shuangfeng (Old Xiang)** — per-table vetted tone semantics | ~48k records over 9 points |
-| **kaikki.org Okinawan** | Okinawan (Ryukyuan) kanji readings (kana + romanisation) | ~185 chars |
-
-The **long table** (`readings_long.parquet`) stores one row per
-`(char, column, reading, source, conf)` so every reading is auditable and
-conflicts between sources are visible. The **wide CSV** is derived from it: it
-keeps the legacy branch columns (gap-filled from a representative locality),
-adds reconstruction columns, and appends a full `dial:<branch>-<locality>` layer
-(e.g. `dial:Min-Fuzhou`). ML-imputed cells carry a `[ML]` suffix and never
-overwrite sourced data.
+MCPDict tables that land in a column already covered by Wiktionary/kaikki are
+**gap-fill only** (a cell never mixes two transcriptions of one place), and
+their tones are **harmonised**: MCPDict's tone *category* is kept, rendered
+with the contour the column's primary source uses for that category
+(`merge.harmonize_fallback_tones`). Korean/MC gap-fills follow the same rule;
+the converters (Telex → Quốc Ngữ, Revised Romanization → Hangul → Yale) are
+validated against Unihan (Korean 99.9% agreement; 廣韻→Baxter 97.7% vs
+Baxter–Sagart).
 
 ## Building the dataset
 
-```bash
-pip install -r requirements.txt
+```powershell
+pip install -r requirements-build.txt
 
-# Full rebuild (uses the cached Wiktionary crawl under data/raw/):
+# Full rebuild (cached Wiktionary crawl; fetches MCPDict tables if missing):
 python -m hanzihub.build_dataset
 
 # Re-crawl Wiktionary for new/changed characters:
@@ -90,33 +111,44 @@ python -m hanzihub.build_dataset --refresh-wiktionary
 python -m hanzihub.build_dataset --no-wiktionary --no-impute
 ```
 
-Paths are resolved from the repo root by default, or from the `HANZIHUB_ROOT`
-environment variable — no more hard-coded user paths.
+To move to a newer MCPDict snapshot, bump `MCPDICT_SHA` in
+`hanzihub/sources/mcpdict.py`, delete `data/raw/mcpdict/`, rebuild and re-run
+the tests. Paths resolve from the repo root, or from `HANZIHUB_ROOT`.
 
 ## Credentials (Google Cloud TTS + Translation)
 
-The app uses Google Cloud Text-to-Speech and Translation. **Do not commit the
-service-account key.** Point the standard environment variable at it instead:
+**Never commit the service-account key.** Any one of these works:
 
-```powershell
-$env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\tts-robot-key.json"
-```
+* `GOOGLE_APPLICATION_CREDENTIALS` pointing at the key file (local);
+* a `[gcp_service_account]` block in `.streamlit/secrets.toml` (gitignored)
+  or in the Streamlit Cloud Secrets box (hosted);
+* the legacy `TTS/tts-robot-key.json` (gitignored).
 
-> ⚠️ The previously committed key `TTS/tts-robot-key.json` should be **rotated**
-> in the Google Cloud console — it has been stored in a synced OneDrive folder.
-> It is now listed in `.gitignore`.
+> ⚠️ The key `TTS/tts-robot-key.json` has lived in a synced OneDrive folder —
+> rotate it in the Google Cloud console and use the new key for the secrets.
+
+## Licence
+
+Code: MIT (`LICENSE`). Data: compiled from third-party sources with their own
+terms; the built tables are shared under CC BY-SA 4.0 — see
+[`DATA_SOURCES.md`](DATA_SOURCES.md) for full attribution.
 
 ## Layout
 
 ```
+app.py            Streamlit front-end
 hanzihub/
   paths.py        central path config (HANZIHUB_ROOT / repo root)
   schema.py       columns, 39-locality order + branch map, source tags
-  _http.py        cached, rate-limit-aware downloader
   sources/        one loader per source (uniform record shape)
-  merge.py        sources -> long table -> wide CSV
+  sinoxenic.py    Telex / Revised-Romanization / Yale converters
+  merge.py        sources -> long table -> wide table (gap-fill + harmonise)
+  reconstruct.py  comparative Proto-Min reconstruction
   impute.py       gated ML imputation (calibrated, abstains when unsure)
   build_dataset.py  CLI orchestrator
-data/raw/         cached downloads (gitignored)
-data/out/         build outputs (gitignored)
+  appkit.py / scrapers.py / reading.py / progress.py   app logic
+data/raw/         source caches (committed, small)
+data/out/         build outputs (parquet committed; CSV local only)
+Guides/           in-app guides
+tests/            pytest suite
 ```

@@ -131,6 +131,34 @@ def crawl(*, limit: int | None = None, min_interval: float = 1.0,
     return cache
 
 
+_CHAO = {"1": "˩", "2": "˨", "3": "˧", "4": "˦", "5": "˥"}
+# a digit run after any non-digit, non-space char (incl. combining marks:
+# 'tɛ̃55', 'ŋ̍5' — \w would miss those)
+_TONE_RUN = re.compile(r"(?<=[^\d\s])([0-9]+)(?=$|[^0-9])")
+_HAN_NOTE = re.compile(r"[㐀-鿿\U00020000-\U0003ffff]+.*$")
+
+
+def normalize_dialpron(raw: str) -> list[str]:
+    """One dial-pron slot → clean readings.
+
+    The module packs alternates into one string with ``|`` and appends Han
+    annotations (``zin31|naŋ31訓儂``), and writes pitch as ASCII Chao numerals
+    (``ʐən35``). Split, strip the annotation, and render the contour as Chao
+    letters (``ʐən˧˥``) so these readings dedupe against every other source.
+    A run containing 0 (neutral tone) or 6–9 is left untouched."""
+    out = []
+    for part in (raw or "").split("|"):
+        s = _HAN_NOTE.sub("", part).strip()
+        if not s:
+            continue
+        s = _TONE_RUN.sub(
+            lambda m: "".join(_CHAO[d] for d in m.group(1))
+            if all(d in _CHAO for d in m.group(1)) else m.group(1), s)
+        if s not in out:
+            out.append(s)
+    return out
+
+
 def records_from_cache(cache: dict[str, list[list[str]]]) -> list[dict]:
     records: list[dict] = []
     for char, sets in cache.items():
@@ -138,17 +166,18 @@ def records_from_cache(cache: dict[str, list[list[str]]]) -> list[dict]:
             continue
         seen: set[tuple[str, str]] = set()
         for readings in sets:
-            for i, reading in enumerate(readings):
-                if i >= len(LOCALITIES) or not reading:
+            for i, raw in enumerate(readings):
+                if i >= len(LOCALITIES) or not raw:
                     continue
                 loc = LOCALITIES[i]
                 col = locality_col(loc)
-                key = (col, reading)
-                if key in seen:
-                    continue
-                seen.add(key)
-                records.append(record(char, col, reading, SRC_WIKTIONARY,
-                                      locality=loc.name))
+                for reading in normalize_dialpron(raw):
+                    key = (col, reading)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(record(char, col, reading, SRC_WIKTIONARY,
+                                          locality=loc.name))
     return records
 
 

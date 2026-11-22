@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import html as _html
 import re
+from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -20,6 +21,8 @@ from hanzihub import appkit as ak
 from hanzihub import scrapers as sc
 from hanzihub import soundlaws
 from hanzihub import paths
+from hanzihub import reading as rd
+from hanzihub import progress as pg
 
 st.set_page_config(page_title="漢字音庫 — Hanzi Sound Library", layout="wide")
 
@@ -123,7 +126,10 @@ def c_hokkien_colloquial(t):
 
 @st.cache_data(show_spinner="Fetching Chaozhou Teochew syllables (mogher.com)…")
 def c_teochew_phrase(toks, spoken):
-    return ak.teochew_phrase_mp3(toks, spoken)
+    # returns (mp3|None, missing_chars); editing this body also invalidates any
+    # cache entries from when it returned bare bytes (avoids a stale-unpack)
+    mp3, missing = ak.teochew_phrase_mp3(toks, spoken)
+    return mp3, missing
 
 
 def spk_bytes(mp3: bytes, key) -> str:
@@ -137,10 +143,22 @@ def spk_bytes(mp3: bytes, key) -> str:
             f"title='Play' style='font-size:1.15em;text-decoration:none'>🔊</a>")
 
 
-def spk(text, voice):
-    """🔊 for one Google-TTS utterance (see ``spk_bytes``)."""
+def _mogher_link(text="", label="mogher.com") -> str:
+    """``mogher.com`` as a source link (like the ithuan.tw attribution). With a
+    character it deep-links to that entry — mogher is indexed by SIMPLIFIED
+    hanzi, so the simplified form is used; ``target=_blank`` so it also works
+    from inside the play_row iframe."""
+    core = ak.t2s_text(text) if text and ak.looks_like_hanzi(text[0]) else ""
+    url = "https://www.mogher.com/" + (quote(core) if core else "")
+    return (f"<a href='{url}' target='_blank' rel='noopener' "
+            f"style='color:inherit;text-decoration:underline'>{_html.escape(label)}</a>")
+
+
+def spk(text, voice, rate=1.0):
+    """🔊 for one Google-TTS utterance (see ``spk_bytes``). ``rate`` < 1 slows the
+    speech — used when reading whole passages, which sound rushed at 1.0."""
     try:
-        return spk_bytes(ak.tts_bytes(text, *voice), (text, voice))
+        return spk_bytes(ak.tts_bytes(text, *voice, rate=rate), (text, voice, rate))
     except Exception:
         return "<span title='audio unavailable' style='opacity:.35'>🔇</span>"
 
@@ -167,6 +185,18 @@ _SINITIC = {"Mandarin", "Cantonese", "Hokkien", "Teochew", "Eastern Min (Fuzhou)
 _HIST = {"Middle Chinese", "Middle Chinese (Baxter)", "Middle Chinese (position)",
          "Tang", "Fanqie", "fanqie_upper", "fanqie_lower", "Old Chinese",
          "Old Chinese (Zhengzhang)", "Proto-Min"}
+# Chronological rank for the Historical section (oldest → newest): Old Chinese →
+# Proto-Min (Min splits early) → Middle Chinese / its position code / its fanqie
+# spelling (all Qieyun-era) → Tang. Merged-pair secondaries share their primary's
+# rank so they stay adjacent (a stable sort keeps the primary first).
+_HIST_CHRONO = {
+    "Old Chinese": 0, "Old Chinese (Zhengzhang)": 0,
+    "Proto-Min": 1,
+    "Middle Chinese": 2, "Middle Chinese (Baxter)": 2,
+    "Middle Chinese (position)": 3,
+    "Fanqie": 4, "fanqie_upper": 4, "fanqie_lower": 4,
+    "Tang": 5,
+}
 _SINO = {"Vietnamese", "Zhuang", "Japanese", "Japanese On", "Japanese Kun",
          "Okinawan", "Korean (Hangul)", "Korean (romanized)", "Korean (Yale)"}
 
@@ -327,6 +357,44 @@ def _conf_chip(conf):
             f"vowel {round(conf * 100)}%</span>")
 
 
+@st.cache_data(show_spinner=False)
+def c_mogher_readings_typed(ch):
+    return ak._mogher_char_parse(ch)
+
+
+def _teochew_reading_audio(reading):
+    """A 🔊 for one exact mogher Peng'im reading, playing its own recording.
+    ``""`` when mogher hasn't recorded that particular reading."""
+    try:
+        return " " + spk_bytes(ak.teochew_syllable_mp3(reading), ("teo-syl", reading))
+    except Exception:
+        return ""
+
+
+def _teochew_reading_row(ch, dialect):
+    """Teochew row rendered from mogher's OWN readings — every reading it lists
+    (文/白/训/俗) shown as a Chao-tone chip with its own 🔊, since mogher records
+    each one. 俗讀 (slang/vernacular) is kept but demoted to the end so the
+    standard readings lead. ``False`` when mogher has nothing (caller falls back
+    to the plain dataset reading)."""
+    try:
+        allr = c_mogher_readings_typed(ch)
+        parsed = ([(r, t) for r, t in allr if t != "俗"]
+                  + [(r, t) for r, t in allr if t == "俗"])
+    except Exception:
+        parsed = []
+    if not parsed:
+        return False
+    cells = [_wikt_chip(ak.wikt_rom_to_chao(r, "teochew")) + _teochew_reading_audio(r)
+             for r, _ in parsed]
+    line = " <span style='opacity:.4'>/</span> ".join(cells)
+    ap = ak.rom_approx_html(parsed[0][0], "teochew")
+    if ap:
+        line += "&nbsp;&nbsp;" + ap
+    play_row(f"<b>{_html.escape(dialect)}:</b> {line}", height=44)
+    return True
+
+
 def _reading_row(ch, dialect, val, wikt=None):
     """Render one reading row (markdown, or a compact 🔊 line for audio rows)."""
     dl = ak._norm(dialect)
@@ -362,6 +430,8 @@ def _reading_row(ch, dialect, val, wikt=None):
         play_row(f"<b>{_html.escape(dialect)}:</b> {ak.render_readings_html(val, dialect)} "
                  f"{spk(ch, ak.VOICE_YUE)}", height=40)
         return
+    if dl.startswith("teochew") and _teochew_reading_row(ch, dialect):
+        return                              # mogher readings + per-reading 🔊
     if dialect == "Fanqie":
         # 反切: upper char = initial, lower char = final + tone. Decompose each
         # spelling with the spellers' own Baxter MC readings from the dataset.
@@ -653,6 +723,12 @@ def _sino_reading(nid, bucket):
     return None
 
 
+# Sino-Xenic romaji columns stored uppercase in Unihan (kJapaneseOn, Korean
+# Yale) — lowercased for display, like the topolect panel does. NOT the Baxter
+# MC columns, whose uppercase H/X are meaningful tone/initial markers.
+_ROMANIZED_COLS = {"Japanese On", "Japanese Kun", "Korean (romanized)", "Korean (Yale)"}
+
+
 def _node_reading(bucket, cols, wikt):
     """The reading the main panel shows for a tree node — Wiktionary romanisation
     first (the panel is wiki-primary), except Mandarin/Cantonese which the panel
@@ -672,6 +748,8 @@ def _node_reading(bucket, cols, wikt):
         if v:
             raw = re.split(r"\s*[|/]\s*", v.strip())[0].strip()
             first = ak.tones_to_chao(raw.replace("[ML]", "").strip(), c)
+            if c in _ROMANIZED_COLS:
+                first = first.lower()
             if first:
                 return first, raw.endswith("[ML]")
     return "", False
@@ -688,6 +766,11 @@ def evolution_dot(ch, bucket, wikt=None):
     is_ml = {k: v[1] for k, v in _info.items()}
     for nid in ("sj", "sk"):
         reading[nid] = _sino_reading(nid, bucket) or reading[nid]
+    # Teochew: read from mogher (the panel row + phrase sandhi's source) so the
+    # tree node agrees with them, rather than Wiktionary's divergent Peng'im.
+    teo = ak.teochew_node_reading(ch)
+    if teo:
+        reading["teo"], is_ml["teo"] = teo, False
     present = {n[0] for n in _EVO if (not n[3]) or reading[n[0]]}
     # proto-Min is a structural branch point: show it whenever this character has
     # any Min daughter — even when it has no reconstruction of its own — so the
@@ -781,7 +864,7 @@ def render_single(ch: str):
                     + "<div class='wikt-src'>Source: English Wiktionary (CC BY-SA 4.0)</div></div>")
             scraper_html(body, height=640, extra_css=_ENTRY_CSS)
 
-    with st.expander("🌳 Sound evolution (Old Chinese → today)", expanded=True):
+    with st.expander("🌳 Sound evolution (Old Chinese → today)"):
         st.graphviz_chart(evolution_dot(ch, bucket, wikt), width="content")
         st.caption("**Hover a branch node** to see the regular sound changes that produced "
                    "this character's form there (derived from its Middle Chinese category). "
@@ -794,7 +877,8 @@ def render_single(ch: str):
 
     pref = ak.PREFERRED_ORDER
     sinitic = [c for c in pref if c in _SINITIC]
-    hist = [c for c in pref if c in _HIST]
+    hist = sorted((c for c in pref if c in _HIST),
+                  key=lambda c: _HIST_CHRONO.get(c, 99))
     sino = [c for c in pref if c in _SINO]
     known = _SINITIC | _HIST | _SINO | {"Definition"}
     other = [c for c in ak.sorted_cols(DIALECT_COLS)
@@ -838,25 +922,64 @@ def render_single(ch: str):
 # =====================================================================
 # Multi character
 # =====================================================================
+def _peek_cell(bucket, col):
+    """First clean alternate of a reading cell ([ML] stripped) for the hover peek."""
+    raw = (bucket.get(col) or "").strip()
+    if not raw:
+        return ""
+    return re.split(r"\s*\|\s*", raw)[0].replace("[ML]", "").strip()
+
+
+def char_peek(ch: str) -> str:
+    """Hover tooltip for a character in the multi-char strip: key readings
+    (Mandarin / Cantonese / Japanese / Korean) + a short gloss. Uses the
+    traditional form's data for simplified input (with_trad_fallback)."""
+    bucket, _ = ak.with_trad_fallback(DATA, ch)
+    if not bucket:
+        return f"**{ch}** — no data recorded"
+    # Japanese: the "Japanese" cell mixes on'yomi (katakana) + kun'yomi (hiragana)
+    # — keep just the first on'yomi katakana, paired with its lowercased romaji.
+    kata = re.findall(r"[゠-ヿ]+", bucket.get("Japanese") or "")
+    ja = kata[0] if kata else ""
+    ja_on = _peek_cell(bucket, "Japanese On").split()[:1]
+    ja_on = ja_on[0].lower() if ja_on else ""
+    ja = f"{ja} ({ja_on})" if ja and ja_on else (ja or ja_on)
+    ko = _peek_cell(bucket, "Korean (Hangul)") or ak.ko_from_hanzi_local(ch)[0]
+    ko_rom = _peek_cell(bucket, "Korean (romanized)").split()[:1]
+    ko_rom = ko_rom[0].lower() if ko_rom else ""
+    ko = f"{ko} ({ko_rom})" if ko and ko_rom else (ko or ko_rom)
+    lines = [f"**{ch}**"]
+    for lab, val in [("M", _peek_cell(bucket, "Mandarin")),
+                     ("C", _peek_cell(bucket, "Cantonese")),
+                     ("J", ja), ("K", ko)]:
+        if val:
+            lines.append(f"**{lab}** · {val}")
+    defn = (bucket.get("Definition") or "").strip().replace("\n", " ")
+    if defn:
+        lines.append(f"_{defn[:70]}_")
+    return "  \n".join(lines)
+
+
 def render_multi(text: str):
     st.subheader(f"Pronunciations for {text}")
 
-    # Per-character drill-down: each Hanzi becomes a button that re-runs the
-    # search on that single character, opening the full single-character view
-    # (glyph origin, sound-evolution tree, provenance, …).
+    # Character strip (the hero of the multi-char view): hover a glyph for a
+    # quick M/C/J/K + gloss peek, click it to open the full single-character
+    # view (glyph origin, sound-evolution tree, provenance, …). The heavier
+    # phrase-level machinery is tucked into collapsed expanders below.
     chars = [c for c in dict.fromkeys(text) if ak.looks_like_hanzi(c)]
-    if len(chars) > 1:
-        st.caption("Look up an individual character:")
+    if chars:
+        st.caption("Hover a character for a quick peek · click it for the full lookup:")
         per_row = 8
         for start in range(0, len(chars), per_row):
             row = chars[start:start + per_row]
             cols = st.columns(per_row)
             for col, ch in zip(cols, row):
                 col.button(ch, key=f"drill_{ch}", use_container_width=True,
+                           help=char_peek(ch),
                            on_click=lambda c=ch: st.session_state.update(query=c))
 
-    with st.container(border=True):
-        st.markdown("**Definition** — the meaning, then each language's *native* word for it")
+    with st.expander("🈶 Meaning in each language"):
         if not ak.gt_ready():
             st.info("Google Translation client not initialized — check credentials / billing.")
         try:
@@ -879,9 +1002,11 @@ def render_multi(text: str):
         except ak.TranslationError as e:
             st.error(f"Translation unavailable — {e}")
 
-    st.divider()
-    st.markdown("### Per-character readings & audio")
+    with st.expander("🔊 Phrase pronunciation & audio"):
+        render_phrase_section(text)
 
+
+def render_phrase_section(text: str):
     st.markdown("**Japanese**")
     jp_shin = ak.to_shinjitai_per_char(text)
     ja_romaji, ja_kana = c_ja_kana(text)
@@ -1077,12 +1202,17 @@ def render_multi(text: str):
                     toks_t, dialect, label="&nbsp;&nbsp;↳ colloquial spoken:")
                 if coll_line:
                     md(coll_line)
-            teo, errs = {}, []
+            teo, missing = {}, []
             for name, spoken in (("citation", False), ("spoken", True)):
+                mp3, miss = None, []
                 try:
-                    teo[name] = c_teochew_phrase(toks_t, spoken)
-                except Exception as e:
-                    errs.append(str(e))
+                    mp3, miss = c_teochew_phrase(toks_t, spoken)
+                except Exception:
+                    pass
+                teo[name] = mp3
+                for c in miss:
+                    if c not in missing:
+                        missing.append(c)
             cit, spo = teo.get("citation"), teo.get("spoken")
             if cit or spo:
                 tip = ("Stitched from single-syllable dictionary "
@@ -1096,17 +1226,19 @@ def render_multi(text: str):
                           if via else
                           "Reads the sentence AS WRITTEN, word by word — "
                           "colloquial wording unavailable for this input."))
-                row = ("<span style='opacity:.7;font-size:.92em' "
-                       f"title='{tip}'>(Chaozhou Teochew, mogher.com, "
-                       "stitched)</span>")
+                row = (f"<span style='opacity:.7;font-size:.92em' title='{tip}'>"
+                       "(Chaozhou Teochew, "
+                       + _mogher_link(text) + ", stitched)</span>")
                 if cit:
                     row += " citation " + spk_bytes(cit, ("teo-cit", teo_src))
                 if spo and spo != cit:
                     row += "&nbsp;&nbsp;spoken " + spk_bytes(spo, ("teo-spk", teo_src))
                 play_row(row)
-            if errs:
-                st.caption("Chaozhou Teochew audio partly unavailable "
-                           f"(mogher.com): {'; '.join(sorted(set(errs)))}")
+            if missing:
+                md("<div style='color:#8a8f98;font-size:.85em'>No "
+                   + _mogher_link(text) + " recording for "
+                   + _html.escape(" ".join(missing))
+                   + " — skipped (not in its dictionary).</div>")
 
 
 # =====================================================================
@@ -1180,6 +1312,528 @@ def render_reverse(en: str):
 
 
 # =====================================================================
+# Read passages — annotated multilingual reader (merges the old atcre reader
+# into 漢字音庫: segment a passage into words, then show every character's
+# reading in the chosen Sinitic language, with audio where a voice exists)
+# =====================================================================
+_SAMPLE_PASSAGE = "今天天氣很好，我想去公園散步。你要不要一起來？"
+
+# Which columns can head an audio branch (the only ones with real voices).
+_READ_AUDIO_PREFIXES = ("mandarin", "cantonese", "hokkien", "teochew")
+# Passages read rushed at the default Google-TTS pace — slow them for the reader.
+_READ_TTS_RATE = 0.8
+# Historical / reconstructed reading layers offered after the modern topolects,
+# oldest → newest. One variety each for OC and MC — whichever has the fullest DATA
+# coverage (Zhengzhang OC ≈13k > Baxter–Sagart ≈4k; Baxter MC-IPA ≈18k >
+# transcription ≈4k) — but labelled plainly. Reconstructions (marked *), no audio.
+_HIST_READ = ["Old Chinese (Zhengzhang)", "Middle Chinese (Baxter)", "Tang", "Proto-Min"]
+_HIST_LABEL = {"Old Chinese (Zhengzhang)": "Old Chinese",
+               "Middle Chinese (Baxter)": "Middle Chinese"}
+
+
+def _lang_has_audio(c) -> bool:
+    return any(ak._norm(c).startswith(p) for p in _READ_AUDIO_PREFIXES)
+
+
+def _lang_label(c) -> str:
+    """Dropdown label: the plain language name, suffixed with 🔊 for the ones
+    that have a spoken voice (Mandarin, Cantonese, Hokkien, Teochew) so support
+    is visible at a glance; the rest are readings + ≈English only."""
+    label = _HIST_LABEL.get(c, c)
+    return f"{label}  🔊" if _lang_has_audio(c) else label
+
+
+@st.cache_data(show_spinner="Matching Teochew readings to mogher.com…")
+def c_teochew_voiced_reads(sent, trad, literary=False):
+    """Teochew ``[(char, reading)]`` with each Hanzi remapped to the Peng'im
+    mogher actually voices (see ``teochew_voiced_reading``), so the reader
+    shows exactly what it plays and IPA-only entries (床) still get audio.
+    ``literary`` selects 文讀 recitation over the natural everyday reading.
+    The Hokkien tâi-lô referee (ithuan.tw) only refines which of OUR doublets
+    seeds mogher's ranking, so its outage must NOT discard the remap — it is
+    caught and the plain per-char reading is used as the seed instead."""
+    try:
+        kip = c_hokkien_tailo(trad)
+    except Exception:
+        kip = ""
+    try:
+        base = ak.teochew_tailo_matched_tokens(DATA, "Teochew", sent, trad, kip)
+    except Exception:
+        base = ak.per_char_tokens(DATA, "Teochew", sent, trad)
+    return [(ch, ak.teochew_voiced_reading(ch, tok, literary)
+             if tok and ak.looks_like_hanzi(ch) else tok)
+            for ch, tok in base]
+
+
+def _passage_reading(dialect, sent, trad, literary=False):
+    """Per-character ``[(char, reading|None)]`` for one sentence, using the same
+    in-context matchers as the word view (ithuan tâi-lô for Hokkien, the Hokkien
+    referee for Teochew) so the passage speaks the reading it shows. ``literary``
+    switches Teochew to 文讀 recitation."""
+    dl = ak._norm(dialect)
+    try:
+        if dl.startswith("hokkien"):
+            return ak.tailo_matched_tokens(DATA, dialect, sent, trad, c_hokkien_tailo(trad))
+        if dl.startswith("teochew"):
+            return c_teochew_voiced_reads(sent, trad, literary)
+    except Exception:
+        pass
+    return ak.per_char_tokens(DATA, dialect, sent, trad)
+
+
+# Familiarity → glyph colour in the reader (green known, orange weak/looked-up,
+# default not-yet-seen), mirroring the old atcre colour code.
+_STATE_COLOR = {"known": "#6fb96f", "weak": "#e0a86b", "unknown": "#e8e8e8"}
+
+
+def _read_tone(tok, dialect):
+    """Tone display for the reader: Mandarin and Cantonese keep their own
+    romanisation standard (pinyin diacritics, jyutping tone numbers); every other
+    topolect uses the unified Chao pitch-contour letters."""
+    dl = ak._norm(dialect)
+    if dl.startswith("mandarin") or dl.startswith("cantonese"):
+        return tok
+    return ak.tones_to_chao(tok, dialect)
+
+
+def _char_hover(ch, state, word="", wgloss=""):
+    """Hover tooltip for a reader glyph. When the glyph is part of a multi-character
+    word, the compound's meaning leads (飛機 → 'airplane'), so you don't just see the
+    characters' individual senses; then the character itself + its Mandarin pinyin +
+    its own definition (Unihan gloss, the same senses Wiktionary lists), its
+    familiarity and a click hint. Instant (no per-character network fetch)."""
+    d = DATA.get(ch, {})
+    lines = []
+    if word and len(word) >= 2 and wgloss:
+        lines.append(f"{word} — {wgloss}")
+    head = ch
+    man = (d.get("Mandarin") or "").split("|")[0].strip()
+    if man:
+        head += f"  {man}"
+    lines.append(head)
+    defn = (d.get("Definition") or "").strip()
+    if defn:
+        lines.append(defn)
+    lines.append(f"({state} — click to open full entry)")
+    return "\n".join(lines)
+
+
+def _ruby_cell(ch, tok, dialect, state="unknown", word="", wgloss=""):
+    """One stacked character: the glyph (a link that drills into its full entry,
+    coloured by how well you know it) above its reading. Unresolved chars dimmed."""
+    gcol = _STATE_COLOR.get(state, "#e8e8e8")
+    link = (f"<a href='?q={quote(ch)}' title='{_html.escape(_char_hover(ch, state, word, wgloss))}' "
+            f"style='font-size:1.5em;text-decoration:none;color:{gcol}'>"
+            f"{_html.escape(ch)}</a>")
+    if tok:
+        ml = tok.endswith("[ML]")
+        reading = _html.escape(_read_tone(tok.removesuffix("[ML]"), dialect))
+        rcol = "#d8c79b" if ml else "#8fb98f"
+        rspan = f"<span style='font-size:.62em;color:{rcol};white-space:nowrap'>{reading}</span>"
+    else:
+        rspan = "<span style='font-size:.62em;color:#4a5160'>·</span>"
+    return ("<span style='display:inline-flex;flex-direction:column;align-items:center;"
+            f"margin:0 1px;vertical-align:top;line-height:1.15'>{link}{rspan}</span>")
+
+
+def _ruby_html(words, char_reads, dialect, states=None):
+    """Assemble one sentence as word-grouped ruby: each word underlined as a unit,
+    every Hanzi stacked over its reading; punctuation passes through inline."""
+    states = states or {}
+    out, idx = [], 0
+    for w in words:
+        wgloss = rd.word_gloss(w) if rd.has_hanzi(w) else ""   # 飛機 → 'airplane'
+        wlabel = w if len(w) >= 2 else ""
+        cells = []
+        for ch in w:
+            _, tok = char_reads[idx] if idx < len(char_reads) else (ch, None)
+            idx += 1
+            if rd.has_hanzi(ch):
+                cells.append(_ruby_cell(ch, tok, dialect, states.get(ch, "unknown"),
+                                        wlabel, wgloss))
+            else:
+                cells.append("<span style='display:inline-block;font-size:1.3em;"
+                             f"color:#9aa7bd;vertical-align:top'>{_html.escape(ch)}</span>")
+        grouped = "".join(cells)
+        if rd.has_hanzi(w):
+            grouped = ("<span style='display:inline-block;margin:2px 5px 8px;"
+                       f"padding-bottom:1px;border-bottom:1px solid #2c313c'>{grouped}</span>")
+        out.append(grouped)
+    return "".join(out)
+
+
+def _passage_audio(dialect, sent, trad, char_reads):
+    """A 🔊 line for one sentence, for the four languages that have a voice."""
+    dl = ak._norm(dialect)
+    try:
+        if dl.startswith("mandarin"):
+            play_row(spk(sent, ak.VOICE_ZH, rate=_READ_TTS_RATE))
+        elif dl.startswith("cantonese"):
+            play_row(spk(sent, ak.VOICE_YUE, rate=_READ_TTS_RATE))
+        elif dl.startswith("hokkien"):
+            mp3, kip = c_hokkien_tts(trad)
+            if mp3:
+                play_row(f"<span style='opacity:.7;font-size:.9em'>{_html.escape(kip or '')} "
+                         "(Taiwanese Hokkien, ithuan.tw)</span> " + spk_bytes(mp3, ("nan", sent)))
+        elif dl.startswith("teochew"):
+            # Play the SANDHI (spoken) version, not citation — it matches the
+            # "↳ spoken" line and is the closest we can get to connected speech:
+            # each non-final syllable uses a real recording at the citation tone
+            # nearest its sandhi contour (mogher has no connected-speech audio, so
+            # this stays stitched, not native). Falls back to citation per syllable
+            # when that tone isn't recorded, so coverage is unchanged.
+            mp3, missing = c_teochew_phrase(char_reads, True)
+            if mp3:
+                play_row("<span style='opacity:.7;font-size:.9em' title='Tone sandhi "
+                         "applied (matches the ↳ spoken line). Stitched from single-"
+                         "syllable dictionary recordings — approximate, not native "
+                         "connected speech.'>(Chaozhou Teochew — spoken, "
+                         + _mogher_link() + ", stitched)</span> "
+                         + spk_bytes(mp3, ("teo-spk", sent)))
+            if missing:
+                md("<div style='color:#8a8f98;font-size:.85em'>No " + _mogher_link()
+                   + " recording for " + _html.escape(" ".join(missing))
+                   + f" — {'that character was' if len(missing) == 1 else 'those characters were'}"
+                   " skipped (not in its dictionary).</div>")
+    except Exception as e:
+        st.caption(f"Audio unavailable for this sentence: {e}")
+
+
+def _load_sample():
+    i = st.session_state.get("sample_pick", -1)
+    if i is not None and i >= 0:
+        st.session_state["passage"] = rd.load_samples()[i]["text"]
+
+
+def _read_language_ui(key: str):
+    """The Sinitic-language picker shared by the 📖 Read and 🎋 Poems pages:
+    modern topolects (audio-marked) then the historical reconstruction layers,
+    plus the Teochew 文讀 toggle. Returns ``(dialect, literary)``."""
+    modern = [c for c in ak.sorted_cols(DIALECT_COLS)
+              if c in _SINITIC and not c.startswith("dial:")]
+    historical = [c for c in _HIST_READ if c in DIALECT_COLS]
+    dialect = st.selectbox(
+        "Language", modern + historical, key=f"{key}_lang",
+        format_func=_lang_label,
+        help="🔊 marks the languages with a spoken voice (Mandarin, Cantonese, "
+             "Taiwanese Hokkien, Teochew); the rest show readings + ≈English only. "
+             "Modern topolects first, then the historical layers — Old Chinese → "
+             "Middle Chinese → Tang — plus Proto-Min, which are scholarly "
+             "reconstructions (marked *).")
+    dl = ak._norm(dialect)
+    if dialect in _HIST_READ:
+        st.caption(f"🏛️ {_HIST_LABEL.get(dialect, dialect)} is a historical "
+                   "reconstruction — readings (★ = reconstructed) with ≈English; "
+                   "tone marks are historical categories, not modern pitch. No audio.")
+    elif not any(dl.startswith(p) for p in _READ_AUDIO_PREFIXES):
+        st.caption(f"🔇 No audio voice exists for {dialect} — readings + ≈English only.")
+
+    # Teochew reads in the natural everyday register by default (common words keep
+    # their colloquial 白讀 sound: 食 ziah8, 大 dua7); classical poetry is
+    # traditionally recited in literary 文讀, so offer that as a toggle.
+    literary = False
+    if dl.startswith("teochew"):
+        literary = st.toggle(
+            "文讀 literary recitation", key=f"{key}_literary",
+            help="Off: natural everyday readings (食 ziah8 'eat', 大 dua7 'big'). "
+                 "On: literary reading-pronunciation used to recite classical "
+                 "poetry (食 sig8, 大 dai6). 训讀 gloss readings (二 as 兩) are "
+                 "avoided either way.")
+    return dialect, literary
+
+
+def _render_reading_line(dialect: str, sent: str, states: dict, literary: bool):
+    """Render one sentence/line the way both readers do: a ruby row (each glyph
+    over its reading, coloured by familiarity, clickable), the Min positional
+    "↳ spoken" sandhi line (or ≈English respelling for the toneless topolects),
+    and the 🔊 audio player where a voice exists."""
+    trad = sent
+    char_reads = _passage_reading(dialect, sent, trad, literary)
+    md("<div style='margin:12px 0 2px;line-height:2.7'>"
+       + _ruby_html(rd.segment(sent), char_reads, dialect, states) + "</div>")
+    sandhi = ak.phrase_sandhi_html(char_reads, dialect)
+    if sandhi:
+        md(sandhi)
+    else:
+        ap = ak.approx_html(dialect, " ".join(t for _, t in char_reads if t))
+        if ap:
+            md(f"<span style='opacity:.85'>{ap}</span>")
+    _passage_audio(dialect, sent, trad, char_reads)
+
+
+def render_reading_passage():
+    st.subheader("📖 Read a passage")
+    st.caption("Paste Hanzi, pick a sample, or import a URL — then choose a Sinitic language "
+               "and read it word-by-word with each character's reading. **Click any character** "
+               "for its full entry (and to mark it as looked-up). Glyphs are coloured by how "
+               "well you know them: <span style='color:#6fb96f'>green = known</span>, "
+               "<span style='color:#e0a86b'>orange = weak/looked-up</span>, grey = new. Readings "
+               "are shown in Traditional characters (Simplified input is converted). Audio "
+               "plays for the languages marked 🔊 (Mandarin, Cantonese, Taiwanese Hokkien, "
+               "Teochew); other topolects show readings + ≈English only.", unsafe_allow_html=True)
+    st.session_state.setdefault("passage", _SAMPLE_PASSAGE)
+
+    samples = rd.load_samples()
+    csamp, curl = st.columns([2, 1])
+    with csamp:
+        st.selectbox(
+            "Load a graded sample (easiest → hardest)",
+            [-1] + list(range(len(samples))),
+            format_func=lambda i: ("— pick a sample —" if i < 0
+                                   else f"{samples[i]['title']}  ·  difficulty {samples[i]['difficulty']:.1f}"),
+            key="sample_pick", on_change=_load_sample)
+    with curl:
+        with st.popover("🌐 Import from URL"):
+            url = st.text_input("Page URL", key="import_url", placeholder="https://…")
+            if st.button("Fetch Chinese text", use_container_width=True) and url.strip():
+                with st.spinner("Fetching…"):
+                    res = rd.import_from_url(url.strip())
+                if res.get("error"):
+                    st.error(res["error"])
+                else:
+                    st.session_state["passage"] = res["text"]
+                    st.success(f"Imported: {res['title']}")
+                    st.rerun()
+
+    text = st.text_area("Passage (Traditional or Simplified Hanzi)", height=140, key="passage")
+
+    if not (text or "").strip():
+        # Language picker still shown for context even before text is entered.
+        _read_language_ui("read")
+        st.info("Enter a passage above."); return
+    dialect, literary = _read_language_ui("read")
+
+    # Always read/show in Traditional, even when the passage was pasted in
+    # Simplified — convert once so glyphs, segmentation, familiarity, readings
+    # and audio all agree (s2t is a no-op on already-traditional text).
+    text = ak.s2t_text(text)
+    # Colour every glyph by familiarity (one query for the whole passage).
+    states = pg.status_map([c for c in text if ak.looks_like_hanzi(c)])
+    for sent in rd.sentences(text):
+        _render_reading_line(dialect, sent, states, literary)
+        st.divider()
+
+
+# =====================================================================
+# 🎋 Poems — a bundled classical-poetry library (唐詩三百首 · 宋詞三百首 · 詩經 ·
+# 蒙學), studied through the very same reading machinery as the 📖 Read page,
+# plus a memorise/recite mode.
+# =====================================================================
+_ANTH_ICON = {"唐詩三百首": "🌙", "宋詞三百首": "🍷", "詩經": "🌾", "蒙學": "📚"}
+
+
+def _poem_passage(poem: dict) -> str:
+    """The poem as one passage — one line per source line so the sentence
+    splitter (and thus per-line rendering) breaks exactly on the poem's lines."""
+    return "\n".join(poem["lines"])
+
+
+def _mask_line(line: str) -> str:
+    """Blank out every Hanzi (keeping punctuation & spacing) so a line's shape
+    is visible for recall in recite mode without giving the characters away."""
+    return "".join("＿" if ak.looks_like_hanzi(c) else c for c in line)
+
+
+def render_poems():
+    st.subheader("🎋 Poems")
+    st.caption("A built-in library of classical poetry — the **唐詩三百首** (300 Tang "
+               "poems), **宋詞三百首** (300 Song lyrics), the **詩經** (Book of Songs) "
+               "and the **蒙學** primers — so you can study poems in the app instead of "
+               "hunting for them online. Pick one and read it word-by-word in any "
+               "Sinitic language (readings, ≈English and 🔊 audio, exactly like the "
+               "📖 Read page). Turn on **🙈 Recite mode** to memorise it line by line. "
+               "The chosen poem also becomes your active passage, so **📝 Quiz** and "
+               "**🔄 Review** drill its characters.", unsafe_allow_html=True)
+
+    poems = rd.load_poems()
+    if not poems:
+        st.warning("The poem library isn't built yet — run "
+                   "`python -m hanzihub.build_poems` to download and bundle it.")
+        return
+
+    anthologies = list(dict.fromkeys(p["anthology"] for p in poems))
+    csel, csearch = st.columns([1, 1])
+    with csel:
+        anth = st.selectbox("Anthology", anthologies, key="poem_anth",
+                            format_func=lambda a: f"{_ANTH_ICON.get(a, '📜')} {a}")
+    with csearch:
+        search = st.text_input("Search title or author", key="poem_search",
+                               placeholder="李白 · 靜夜思 · 春 …")
+
+    pool = [p for p in poems if p["anthology"] == anth]
+    s = search.strip()
+    if s:
+        pool = [p for p in pool if s in p["title"] or s in p["author"]]
+    if not pool:
+        st.info("No poems match your search."); return
+
+    # Key the picker on anthology+search so a shrinking pool never leaves a stale
+    # index selected (Streamlit errors if the stored value isn't in the options).
+    idx = st.selectbox(
+        f"Poem  ({len(pool)})", range(len(pool)), key=f"poem_pick::{anth}::{s}",
+        format_func=lambda i: f"{pool[i]['title']} — {pool[i]['author']}")
+    poem = pool[idx]
+
+    # Make the poem the active passage so 📝 Quiz / 🔄 Review work on it too.
+    st.session_state["passage"] = _poem_passage(poem)
+
+    md(f"<h3 style='margin:.4em 0 0'>{_html.escape(poem['title'])}</h3>")
+    meta = poem["author"]
+    if poem["note"] and poem["note"] != poem["title"]:
+        meta += f" · {poem['note']}"
+    md(f"<div style='color:#8a8f98;margin:-2px 0 .3em'>{_html.escape(meta)}</div>")
+
+    dialect, literary = _read_language_ui("poem")
+    recite = st.toggle(
+        "🙈 Recite mode — hide the text, reveal line by line", key="poem_recite",
+        help="Test your recall: each line shows only as blanks (＿) with its "
+             "punctuation. Expand a line to reveal the characters, readings and "
+             "🔊 audio and check yourself.")
+
+    text = ak.s2t_text(_poem_passage(poem))
+    states = pg.status_map([c for c in text if ak.looks_like_hanzi(c)])
+    lines = rd.sentences(text)
+
+    # Short poems render whole; the long 蒙學 primers (千字文 is 250 lines) are
+    # paged so we never fire hundreds of TTS synths — every rendered line eagerly
+    # builds its audio, and Streamlit runs expander bodies even while collapsed.
+    _PAGE = 16
+    offset = 0
+    if len(lines) > _PAGE:
+        npages = (len(lines) + _PAGE - 1) // _PAGE
+        page = st.number_input(
+            f"Page (of {npages} · {_PAGE} lines each)", 1, npages, 1,
+            key=f"poem_page::{poem['id']}") - 1
+        offset = page * _PAGE
+        lines = lines[offset:offset + _PAGE]
+
+    if recite:
+        st.caption("Recite each line from memory, then expand it to check.")
+        for i, ln in enumerate(lines, offset + 1):
+            with st.expander(f"{i}.　{_mask_line(ln)}"):
+                _render_reading_line(dialect, ln, states, literary)
+    else:
+        for ln in lines:
+            _render_reading_line(dialect, ln, states, literary)
+            st.divider()
+
+
+# =====================================================================
+# Learning layer — quiz, spaced-repetition review, progress (merged from atcre,
+# now backed by hanzihub.progress and the multilingual DATA dictionary)
+# =====================================================================
+def _char_gloss(ch: str) -> str:
+    d = DATA.get(ch, {}).get("Definition", "")
+    return d.split(";")[0].strip()[:44] if d else ""
+
+
+def _new_quiz_question(pool):
+    import random
+    ch = random.choice(pool)
+    correct = _char_gloss(ch)
+    opts, seen = [correct], {correct}
+    others = [c for c in DATA if c != ch and DATA[c].get("Definition")]
+    random.shuffle(others)
+    for c in others:
+        g = _char_gloss(c)
+        if g and g not in seen:
+            seen.add(g); opts.append(g)
+        if len(opts) == 4:
+            break
+    random.shuffle(opts)
+    st.session_state["quiz"] = {"char": ch, "correct": correct, "opts": opts, "answered": None}
+
+
+def render_quiz():
+    st.subheader("📝 Quiz")
+    text = st.session_state.get("passage") or _SAMPLE_PASSAGE
+    pool = [c for c in dict.fromkeys(text) if ak.looks_like_hanzi(c) and _char_gloss(c)]
+    if not pool:
+        st.info("Open **📖 Read passages** and load or paste a passage first — the quiz "
+                "tests the characters in it."); return
+    focus = [c for c in pool if pg.status_map(pool).get(c) != "known"] or pool
+    st.caption(f"Pick the meaning. Drawing from {len(focus)} character(s) in your current "
+               "passage (weak/new first). Answers feed your review schedule.")
+    if "quiz" not in st.session_state or st.session_state["quiz"]["char"] not in DATA:
+        _new_quiz_question(focus)
+    q = st.session_state["quiz"]
+    md(f"<div style='font-size:4.5em;text-align:center;margin:.1em'>{_html.escape(q['char'])}</div>")
+    choice = st.radio("What does it mean?", q["opts"], index=None, key=f"quiz_{q['char']}",
+                      disabled=q["answered"] is not None)
+    c1, c2 = st.columns(2)
+    if c1.button("Submit", use_container_width=True, disabled=q["answered"] is not None):
+        if choice is None:
+            st.warning("Pick an option first.")
+        else:
+            q["answered"] = (choice == q["correct"])
+            pg.mark(q["char"], q["answered"])
+            st.rerun()
+    if c2.button("Skip →", use_container_width=True):
+        _new_quiz_question(focus); st.rerun()
+    if q["answered"] is not None:
+        if q["answered"]:
+            st.success(f"✓ Correct — {q['char']} = {q['correct']}")
+        else:
+            st.error(f"✗ {q['char']} = {q['correct']}")
+        if st.button("Next question", type="primary"):
+            _new_quiz_question(focus); st.rerun()
+
+
+def render_review():
+    st.subheader("🔄 Review — spaced repetition")
+    due = pg.review_queue(40)
+    if not due:
+        st.success("Nothing due for review. Read a passage (📖), look up characters, or come "
+                   "back once today's cards mature."); return
+    st.caption(f"{len(due)} character(s) due. Recall it, reveal, then grade yourself honestly — "
+               "a correct recall doubles its interval; a miss resets it to a day.")
+    ch = due[0]["char"]
+    md(f"<div style='font-size:4.5em;text-align:center;margin:.1em'>{_html.escape(ch)}</div>")
+    if st.session_state.get("rev_show") != ch:
+        if st.button("Show meaning & readings", type="primary"):
+            st.session_state["rev_show"] = ch; st.rerun()
+    else:
+        d = DATA.get(ch, {})
+        md(f"**Meaning:** {_html.escape((d.get('Definition','') or '(none)')[:140])}")
+        md(f"**Mandarin:** <code>{_html.escape(d.get('Mandarin',''))}</code> &nbsp; "
+           f"**Cantonese:** <code>{_html.escape(d.get('Cantonese',''))}</code>")
+        c1, c2 = st.columns(2)
+        if c1.button("✓ I knew it", use_container_width=True):
+            pg.mark(ch, True); st.session_state.pop("rev_show", None); st.rerun()
+        if c2.button("✗ I didn't", use_container_width=True):
+            pg.mark(ch, False); st.session_state.pop("rev_show", None); st.rerun()
+
+
+def render_progress():
+    st.subheader("📊 Progress")
+    s = pg.stats()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Known", s["known"])
+    c2.metric("Weak", s["weak"])
+    c3.metric("Seen (total)", s["total"])
+    c4.metric("Due now", s["due"])
+    rows = pg.all_chars()
+    if not rows:
+        st.info("No character history yet — read a passage (📖) and click characters, or take "
+                "a quiz (📝)."); return
+    weak = [r for r in rows if r["status"] == "weak"]
+    if weak:
+        st.markdown("**Weak-character spotlight** — click any to open its full entry")
+        strip = " ".join(f"<a href='?q={quote(r['char'])}' style='font-size:1.7em;"
+                         f"text-decoration:none;color:#e0a86b'>{_html.escape(r['char'])}</a>"
+                         for r in weak[:48])
+        md(f"<div style='line-height:2'>{strip}</div>")
+    with st.expander(f"All tracked characters ({len(rows)})"):
+        body = ["<tr><th>Char</th><th>Status</th><th>✓</th><th>✗</th></tr>"]
+        for r in rows:
+            body.append(f"<tr><td style='font-size:1.3em'>{_html.escape(r['char'])}</td>"
+                        f"<td>{r['status']}</td><td>{r['success_count']}</td>"
+                        f"<td>{r['error_count']}</td></tr>")
+        scraper_html("<table>" + "".join(body) + "</table>",
+                     height=min(520, 60 + len(rows) * 28))
+
+
+# =====================================================================
 # IPA legend / guides / paper
 # =====================================================================
 def render_legend(s: str):
@@ -1231,17 +1885,41 @@ def render_paper():
 # =====================================================================
 # Layout
 # =====================================================================
+# A character clicked inside the 📖 Read passage carries ``?q=<char>`` — consume
+# it (before the widgets exist) to seed the search box and flip to Lookup so the
+# full single-character view opens. Cleared after, so later manual searches stick.
+if "q" in st.query_params:
+    _clicked = st.query_params["q"]
+    st.session_state["query"] = _clicked
+    st.session_state["mode"] = "Lookup"
+    if len(_clicked) == 1 and ak.looks_like_hanzi(_clicked):
+        pg.record_clicked(_clicked)          # looked up while reading → mark weak
+    st.query_params.clear()
+
 with st.sidebar:
     st.title("漢字音庫")
     st.caption("Hanzi Sound Library")
     query = st.text_input("Enter Hanzi (single/multi) or English", key="query")
-    mode = st.radio("Mode", ["Lookup", "IPA Legend", "Guides", "Sinitic Paper"])
+    mode = st.radio("Mode", ["Lookup", "📖 Read passages", "🎋 Poems", "📝 Quiz",
+                             "🔄 Review", "📊 Progress", "IPA Legend", "Guides",
+                             "Sinitic Paper"],
+                    key="mode")
     st.caption(f"{len(DATA):,} characters · {len(DIALECT_COLS)} columns")
     if not ak.gt_ready():
         st.caption("⚠️ Translation/TTS credentials not set")
 
 q = (query or "").strip()
-if mode == "Guides":
+if mode == "📖 Read passages":
+    render_reading_passage()
+elif mode == "🎋 Poems":
+    render_poems()
+elif mode == "📝 Quiz":
+    render_quiz()
+elif mode == "🔄 Review":
+    render_review()
+elif mode == "📊 Progress":
+    render_progress()
+elif mode == "Guides":
     render_guides()
 elif mode == "Sinitic Paper":
     render_paper()

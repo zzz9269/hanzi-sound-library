@@ -1,53 +1,130 @@
 """Loader for 漢字音典 / MCPDict dialect tables (github.com/osfans/MCPDict).
 
-MCPDict ships ~2,800 per-dialect 字表 as TSVs under ``tools/tables/data/``.
-Originally this pulled just the two points kaikki/Wiktionary lack — Haikou
-(Hainanese) and Shexian (Hui) — and was expanded 2026-07 to enrich the
-canonical-39 localities the old dial-pron module capped at ~1k characters
-(Suzhou, Wenzhou, Pingyao, Tunxi, Xiangtan, Nanning) plus one new,
-linguistically precious point: **Shuangfeng (Old Xiang)**, which preserves
-the Middle Chinese voiced initials.
+MCPDict aggregates ~3,400 per-locality 字表, most transcribed from the
+standard published references (《漢語方音字彙》-era 音檔 series: 《太原话音档》,
+《南昌方言同音字汇》, 《建瓯话音档》, 《福州方言志》, 《厦门方言同音字汇》 …).
 
-Each table's layout and — crucially — its **tone digit semantics** were vetted
-individually (see ``_POINTS``): pitch-contour digits are converted to Chao
-letters at load; tone-CLASS digits are mapped through verified citation-value
-tables (Wikipedia dialect pages / the table's own ``#调值`` declaration), and
-where no trustworthy value table exists (Tunxi) the class digit is kept
-honestly rather than guessed.
+Two kinds of table are used:
 
-Each point fills a ``dial:`` locality column; branch columns then gap-fill
-from their representative locality in :mod:`hanzihub.merge`.
+* **Normalised output tables** (``tools/tables/output/<簡稱>.tsv``) — MCPDict's
+  own uniform rendering: ``字 \\t IPA+tone-class[tag] \\t 註``. The class digit
+  is mapped to that table's citation contour using the ``聲調`` block of
+  MCPDict's ``_詳情.json`` metadata (from the same reference as the data), then
+  rendered as Chao letters. ``tag`` is MCPDict's reading-type marker
+  (``-`` 白 ``=`` 文 ``+`` 又 ``*`` 俗 ``@`` 訓 ``?`` 存疑); 存疑 readings are dropped.
+  This is now the default for every point — one parser, stable filenames.
+* **Hand-vetted raw tables** (``tools/tables/data/…``) kept where the raw file
+  is richer than MCPDict's chosen output (Suzhou, Wenzhou, Xiangtan, Nanning,
+  Shuangfeng-甘棠, Pingyao, Shexian-岩寺); each has its own vetted parser.
+
+Points whose locality column is already populated by kaikki / Wiktionary are
+loaded as **gap-fill** (``fallback=True``): merge keeps them only for
+characters that have no reading there yet, so one cell never mixes two
+transcriptions of the same place.
+
+Also loaded here, from MCPDict's Sino-Xenic and historical tables:
+  * 越南 — Hán-Việt readings (Telex → Quốc Ngữ, :mod:`hanzihub.sinoxenic`);
+  * 朝鮮 — Naver Hanja dictionary readings (RR → Hangul + Yale), gap-fill;
+  * 廣韻 — Baxter's MC transcription (nk2028 derivation), gap-fill for the
+    ``Middle Chinese`` column (97.7% agreement with Baxter–Sagart 2014 on
+    the 3.9k shared characters).
+
+All URLs are pinned to one upstream commit so a fresh clone rebuilds the exact
+same dataset.
 """
 from __future__ import annotations
 
 import csv
+import json
 import re
 import urllib.parse
 
 from . import is_single_han, record
+from .. import sinoxenic
 from ..paths import RAW_DIR
 from ..schema import SRC_MCPDICT
 
 MCPDICT_DIR = RAW_DIR / "mcpdict"
-_RAW_BASE = "https://raw.githubusercontent.com/osfans/MCPDict/master/tools/tables/data/"
+OUT_DIR = MCPDICT_DIR / "output"
+TONES_JSON = MCPDICT_DIR / "tones.json"
 
-# (local cache name, upstream filename, format, dial: column, locality, opts)
+# Pinned upstream commit (bump deliberately, then rebuild + re-run the tests).
+MCPDICT_SHA = "0322cfe7b609d9024ea4cbd72193a4c648734a02"
+_RAW = f"https://raw.githubusercontent.com/osfans/MCPDict/{MCPDICT_SHA}/tools/tables/"
+_RAW_BASE = _RAW + "data/"
+_RAW_OUT = _RAW + "output/"
+
+# ---------------------------------------------------------------------------
+# Normalised output tables: (簡稱, dial: column, locality, fallback)
+# ---------------------------------------------------------------------------
+_OUT_POINTS: list[tuple[str, str, str, bool]] = [
+    # --- primary: MCPDict is (or replaces) this column's main source ---
+    ("海口", "dial:Min-Haikou", "Haikou", False),       # 《海口话音档》
+    ("歙縣", "dial:Hui-Shexian", "Shexian", False),     # 《歙县话音档》 (徽城)
+    ("屯溪", "dial:Hui-Tunxi", "Tunxi", False),         # 《屯溪话音档》
+    ("績溪", "dial:Hui-Jixi", "Jixi", False),           # 《徽州方言研究》
+    ("潮州", "dial:Min-Chaozhou", "Chaozhou", False),   # Chaozhou city
+    # --- gap-fill: the canonical branch representatives ---
+    ("太原", "dial:Jin-Taiyuan", "Taiyuan", True),      # 《太原话音档》
+    ("南昌", "dial:Gan-Nanchang", "Nanchang", True),    # 《南昌方言同音字汇》
+    ("長沙", "dial:Xiang-Changsha", "Changsha", True),  # 《长沙方言研究》
+    ("建甌", "dial:Min-Jian'ou", "Jian'ou", True),      # 《建瓯话音档》
+    ("福州", "dial:Min-Fuzhou", "Fuzhou", True),        # 《福州方言志》
+    ("梅縣", "dial:Hakka-Meixian", "Meixian", True),    # 《梅县话音档》
+    ("厦門", "dial:Min-Xiamen", "Xiamen", True),        # 《厦门方言同音字汇》
+    ("汕頭", "dial:Min-Shantou", "Shantou", True),
+    ("上海", "dial:Wu-Shanghai", "Shanghai", True),     # 《上海市区方言志》
+    # --- gap-fill: further locality points ---
+    ("臺北", "dial:Min-Taipei", "Taipei", True),
+    ("泉州", "dial:Min-Quanzhou", "Quanzhou", True),
+    ("漳州", "dial:Min-Zhangzhou", "Zhangzhou", True),
+    ("莆田", "dial:Min-Putian", "Putian", True),
+    ("雷州", "dial:Min-Leizhou", "Leizhou", True),
+    ("臺灣四縣腔", "dial:Hakka-Sixian", "Sixian", True),
+    ("臺灣海陸腔", "dial:Hakka-Hailu", "Hailu", True),
+    ("長汀", "dial:Hakka-Changting", "Changting", True),
+    ("杭州", "dial:Wu-Hangzhou", "Hangzhou", True),
+    ("寧波", "dial:Wu-Ningbo", "Ningbo", True),
+    ("金華", "dial:Wu-Jinhua", "Jinhua", True),
+    ("台山", "dial:Cantonese-Taishan", "Taishan", True),
+    ("東莞", "dial:Cantonese-Dongguan", "Dongguan", True),
+    ("哈爾濱", "dial:Mandarin-Harbin", "Harbin", True),
+    ("天津", "dial:Mandarin-Tianjin", "Tianjin", True),
+    ("濟南", "dial:Mandarin-Jinan", "Jinan", True),
+    ("青島", "dial:Mandarin-Qingdao", "Qingdao", True),
+    ("鄭州", "dial:Mandarin-Zhengzhou", "Zhengzhou", True),
+    ("西安", "dial:Mandarin-Xi'an", "Xi'an", True),
+    ("西寧", "dial:Mandarin-Xining", "Xining", True),
+    ("銀川", "dial:Mandarin-Yinchuan", "Yinchuan", True),
+    ("蘭州", "dial:Mandarin-Lanzhou", "Lanzhou", True),
+    ("烏魯木齊", "dial:Mandarin-Ürümqi", "Ürümqi", True),
+    ("武漢", "dial:Mandarin-Wuhan", "Wuhan", True),
+    ("成都", "dial:Mandarin-Chengdu", "Chengdu", True),
+    ("貴陽", "dial:Mandarin-Guiyang", "Guiyang", True),
+    ("昆明", "dial:Mandarin-Kunming", "Kunming", True),
+    ("南京", "dial:Mandarin-Nanjing", "Nanjing", True),
+    ("合肥", "dial:Mandarin-Hefei", "Hefei", True),
+]
+# Sino-Xenic / historical tables (same output directory, special parsers)
+_SX_TABLES = ("越南", "朝鮮", "廣韻")
+
+# ---------------------------------------------------------------------------
+# Hand-vetted raw tables: (local cache name, upstream filename, format,
+# dial: column, locality, opts)
 #
 # Formats:
-#   ipa     — 漢字 / 音標 columns (reading ready-made)
 #   ife     — cid / character / initial / final / tone(contour digits)
 #   cols    — arbitrary column layout via opts: char/ipa/onset/rime/tone
 #             indices; tone is either contour digits (tone_is_contour) or a
 #             class mapped through opts["tone_map"] (VERIFIED citation values,
 #             sources cited per point)
 #   tongyin — 同音字表: '#rime' section headers, rows = onset + '[class]字字…'
-#             groups; an embedded '#调值' line maps class → contour; without
-#             one, the class digit is kept (honest — like Haikou
-#             pre-verification)
+#             groups; an embedded '#调值' line maps class → contour
+# ---------------------------------------------------------------------------
 _POINTS = [
-    ("haikou.tsv", "海口2025-12-23.tsv", "ipa", "dial:Min-Haikou", "Haikou", {}),
-    ("shexian.tsv", "歙县岩寺YB_21J03.tsv", "ife", "dial:Hui-Shexian", "Shexian", {}),
-    # --- 2026-07 expansion: canonical-39 points starved at ~1k chars ---
+    # 岩寺 (a town of old 歙縣) — kept as its own point now that the city
+    # table above owns dial:Hui-Shexian
+    ("shexian.tsv", "歙县岩寺YB_21J03.tsv", "ife", "dial:Hui-Yansi", "Yansi", {}),
     # Suzhou tones per Wikipedia "Suzhou dialect" (阳上 merged into 阳去 231)
     ("suzhou.tsv", "苏州 (正心整合修改版）.tsv", "cols", "dial:Wu-Suzhou",
      "Suzhou", {"char": 1, "onset": 2, "rime": 3, "tone": 4,
@@ -66,8 +143,7 @@ _POINTS = [
     ("nanning.tsv", "南寧白話單字讀音表(總表).tsv", "cols",
      "dial:Cantonese-Nanning", "Nanning",
      {"char": 1, "ipa": 3, "inline_contour": True}),
-    # Shuangfeng (Old Xiang, 甘棠 town) — NEW point; tones per Wikipedia
-    # "Shuangfeng dialect" (city citation values; the town may differ slightly)
+    # Shuangfeng (Old Xiang, 甘棠 town); tones per Wikipedia "Shuangfeng dialect"
     ("shuangfeng.tsv", "双峰甘棠.tsv", "cols", "dial:Xiang-Shuangfeng",
      "Shuangfeng", {"char": 2, "ipa": 0, "tone": 1, "no_header": True,
                     "tone_map": {"1": "55", "2": "23", "3": "21",
@@ -75,10 +151,11 @@ _POINTS = [
     # Pingyao 同音字表 — the file declares its own 調值 map ('#调值' line)
     ("pingyao.tsv", "平遥话同音字表20220527.tsv", "tongyin",
      "dial:Jin-Pingyao", "Pingyao", {}),
-    # Tunxi 同音字表 — NO verified 調值 table exists (zh-wiki conflicts with
-    # the file's own class inventory) → tone kept as an honest class digit
-    ("tunxi.tsv", "屯溪.tsv", "tongyin", "dial:Hui-Tunxi", "Tunxi", {}),
 ]
+
+# columns where every MCPDict record is gap-fill only (merge drops it when a
+# higher-priority source already covers that char)
+FALLBACK_COLUMNS = {"Korean (Hangul)", "Korean (romanized)", "Middle Chinese"}
 
 # initial-aspiration digraphs → IPA; zero-initial markers → ""
 _ASP = {"th": "tʰ", "ph": "pʰ", "kh": "kʰ", "tsh": "tsʰ", "tʃh": "tʃʰ",
@@ -94,31 +171,157 @@ def _chao(digits: str) -> str:
     return ""
 
 
-def download(*, force: bool = False) -> None:
-    """Fetch the needed TSVs into the cache (small; skips existing unless force)."""
+# ---------------------------------------------------------------- download --
+def _get(url: str) -> str:
     import requests
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    return r.text
+
+
+def download(*, force: bool = False) -> None:
+    """Fetch every configured table (pinned commit) into ``data/raw/mcpdict``,
+    plus the per-table tone metadata (a small extract of ``_詳情.json``)."""
     MCPDICT_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     for cache_name, upstream, *_ in _POINTS:
         dest = MCPDICT_DIR / cache_name
-        if dest.exists() and not force:
+        if force or not dest.exists():
+            dest.write_text(_get(_RAW_BASE + urllib.parse.quote(upstream)),
+                            encoding="utf-8")
+    names = [p[0] for p in _OUT_POINTS] + list(_SX_TABLES)
+    for name in names:
+        dest = OUT_DIR / f"{name}.tsv"
+        if force or not dest.exists():
+            dest.write_text(_get(_RAW_OUT + urllib.parse.quote(f"{name}.tsv")),
+                            encoding="utf-8")
+    if force or not TONES_JSON.exists() or \
+            set(names) - set(json.loads(TONES_JSON.read_text(encoding="utf-8"))):
+        meta = json.loads(_get(_RAW_OUT + urllib.parse.quote("_詳情.json")))
+        keep = {}
+        for name in names:
+            m = meta.get(name) or {}
+            tones = m.get("聲調") or "{}"
+            keep[name] = {"語言": m.get("語言", ""),
+                          "字表來源": re.sub(r"<[^>]+>", "", m.get("字表來源") or ""),
+                          "聲調": json.loads(tones) if isinstance(tones, str) else tones}
+        TONES_JSON.write_text(json.dumps(keep, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+
+
+def missing_files() -> list[str]:
+    """Configured tables not yet in the local cache (empty = fully cached)."""
+    out = [c for c, *_ in _POINTS if not (MCPDICT_DIR / c).exists()]
+    out += [n for n in [p[0] for p in _OUT_POINTS] + list(_SX_TABLES)
+            if not (OUT_DIR / f"{n}.tsv").exists()]
+    if not TONES_JSON.exists():
+        out.append(TONES_JSON.name)
+    return out
+
+
+# ------------------------------------------------------ normalised parser --
+# reading = segmental IPA + tone class (digits, optional a/b) + optional tag
+_OUT_READING = re.compile(r"^(?P<seg>[^\d\s]+?)(?P<cls>\d+[ab]?)(?P<tag>[-=+*/\\@?]*)$")
+
+
+def tone_table(meta_tones: dict) -> dict[str, str]:
+    """MCPDict ``聲調`` block ``{class: [contour, …]}`` → ``{class: Chao}``,
+    keeping only classes whose contour is a valid 1–5 pitch string."""
+    out = {}
+    for cls, info in (meta_tones or {}).items():
+        contour = (info[0] if isinstance(info, list) and info else "") or ""
+        chao = _chao(str(contour).strip())
+        if chao:
+            out[str(cls)] = chao
+    return out
+
+
+def parse_out_classes(lines, tones: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Normalised MCPDict table → ``(char, IPA+Chao, tone class)``. Readings
+    whose tone class has no attested contour, or tagged 存疑 (``?``), are
+    skipped — never guessed."""
+    out = []
+    for line in lines:
+        if not line or line.startswith("#"):
             continue
-        url = _RAW_BASE + urllib.parse.quote(upstream)
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        dest.write_text(r.text, encoding="utf-8")
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 2 or not is_single_han(parts[0].strip()):
+            continue
+        m = _OUT_READING.match(parts[1].strip())
+        if not m or "?" in m.group("tag"):
+            continue
+        tone = tones.get(m.group("cls"))
+        if not tone:
+            continue
+        out.append((parts[0].strip(), m.group("seg") + tone, m.group("cls")))
+    return out
 
 
+def parse_out(lines, tones: dict[str, str]) -> list[tuple[str, str]]:
+    """:func:`parse_out_classes` without the class column."""
+    return [(c, r) for c, r, _ in parse_out_classes(lines, tones)]
+
+
+def _read_lines(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
+def _sx_pairs(path) -> list[tuple[str, str]]:
+    out = []
+    for line in _read_lines(path):
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 2 and is_single_han(parts[0].strip()) and parts[1].strip():
+            out.append((parts[0].strip(), parts[1].strip()))
+    return out
+
+
+def _sx_records() -> list[dict]:
+    recs: list[dict] = []
+    vn = OUT_DIR / "越南.tsv"
+    if vn.exists():
+        seen = set()
+        for ch, tok in _sx_pairs(vn):
+            q = sinoxenic.telex_to_vietnamese(tok)
+            if q and (ch, q) not in seen:
+                seen.add((ch, q))
+                recs.append(record(ch, "Vietnamese", q, SRC_MCPDICT))
+    ko = OUT_DIR / "朝鮮.tsv"
+    if ko.exists():
+        by_char: dict[str, list[str]] = {}
+        for ch, tok in _sx_pairs(ko):
+            for h in sinoxenic.naver_korean(tok):
+                lst = by_char.setdefault(ch, [])
+                if h not in lst:
+                    lst.append(h)
+        for ch, hs in by_char.items():
+            # one space-joined record, exactly like Unihan kHangul/kKorean, so
+            # the app's index pairing Hangul ↔ Yale keeps working
+            yale = [sinoxenic.hangul_to_yale(h) for h in hs]
+            recs.append(record(ch, "Korean (Hangul)", " ".join(hs), SRC_MCPDICT))
+            if all(yale):
+                recs.append(record(ch, "Korean (romanized)", " ".join(yale), SRC_MCPDICT))
+    gy = OUT_DIR / "廣韻.tsv"
+    if gy.exists():
+        seen = set()
+        for ch, val in _sx_pairs(gy):
+            fields = val.split("/")
+            bax = fields[1].strip() if len(fields) > 1 else ""
+            if bax and bax.isascii() and (ch, bax) not in seen:
+                seen.add((ch, bax))
+                recs.append(record(ch, "Middle Chinese", bax, SRC_MCPDICT))
+    for r in recs:
+        r["fallback"] = r["column"] in FALLBACK_COLUMNS
+    return recs
+
+
+# ------------------------------------------------------ hand-vetted parsers --
 def _rows(path):
     with open(path, encoding="utf-8") as f:
         return list(csv.reader(f, delimiter="\t"))
-
-
-def _parse_ipa(rows):
-    out = []
-    for r in rows[1:]:
-        if len(r) >= 2 and is_single_han(r[0].strip()) and r[1].strip():
-            out.append((r[0].strip(), r[1].strip()))
-    return out
 
 
 def _parse_ife(rows):
@@ -214,34 +417,64 @@ def _parse_tongyin(rows, opts):
     return out
 
 
-_PARSERS = {"ipa": lambda rows, opts: _parse_ipa(rows),
-            "ife": lambda rows, opts: _parse_ife(rows),
+_PARSERS = {"ife": lambda rows, opts: _parse_ife(rows),
             "cols": _parse_cols,
             "tongyin": _parse_tongyin}
 
 
+# -------------------------------------------------------------------- load --
 def load() -> list[dict]:
-    """Return records for every configured point from the cached TSVs
-    (``[]`` for any TSV not yet downloaded)."""
+    """Records for every configured table present in the local cache
+    (tables not yet downloaded are skipped — run :func:`download`)."""
     records: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(char, column, reading, locality, fallback, tone_class=None):
+        key = (char, column, reading)
+        if key in seen:
+            return
+        seen.add(key)
+        r = record(char, column, reading, SRC_MCPDICT, locality=locality)
+        r["fallback"] = fallback
+        if tone_class is not None:
+            r["tone_class"] = tone_class
+        records.append(r)
+
+    tones_meta = (json.loads(TONES_JSON.read_text(encoding="utf-8"))
+                  if TONES_JSON.exists() else {})
+    for name, column, locality, fallback in _OUT_POINTS:
+        path = OUT_DIR / f"{name}.tsv"
+        tones = tone_table((tones_meta.get(name) or {}).get("聲調"))
+        if not path.exists() or not tones:
+            continue
+        for char, reading, cls in parse_out_classes(_read_lines(path), tones):
+            add(char, column, reading, locality, fallback, cls)
+
+    # Hand-vetted tables share their columns with Wiktionary dial-pron, whose
+    # citation values sometimes differ (Pingyao 平 ˨˨ vs ˩˧) — so they are
+    # gap-fill too, with the contour itself as the harmonisation class key.
     for cache_name, _upstream, fmt, column, locality, opts in _POINTS:
         path = MCPDICT_DIR / cache_name
         if not path.exists():
             continue
-        pairs = _PARSERS[fmt](_rows(path), opts)
-        seen: set[tuple[str, str]] = set()
-        for char, reading in pairs:
-            if (char, reading) in seen:
-                continue
-            seen.add((char, reading))
-            records.append(record(char, column, reading, SRC_MCPDICT, locality=locality))
+        for char, reading in _PARSERS[fmt](_rows(path), opts):
+            m = re.search(r"[˥˦˧˨˩]+$", reading)
+            add(char, column, reading, locality, True, m.group(0) if m else None)
+
+    records += _sx_records()
     return records
 
 
 if __name__ == "__main__":
+    import sys
+    from collections import Counter
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     download()
     recs = load()
-    from collections import Counter
     by_col = Counter(r["column"] for r in recs)
-    print(f"[mcpdict] {len(recs):,} records: {dict(by_col)}")
-    print("  sample:", [(r["char"], r["reading"]) for r in recs[:4]])
+    print(f"[mcpdict] {len(recs):,} records")
+    for col, n in sorted(by_col.items()):
+        print(f"  {col:32s} {n:7,}")

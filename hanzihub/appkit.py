@@ -36,11 +36,11 @@ VOICE_ZH = ("cmn-CN", "cmn-CN-Wavenet-A")
 VOICE_YUE = ("yue-HK", "yue-HK-Standard-A")
 VOICE_VI = ("vi-VN", "vi-VN-Wavenet-A")
 
-PROJECT_ID = "zach-ipa-tts-2025"
-PARENT = f"projects/{PROJECT_ID}/locations/global"
-
 EXCLUDE_COLS = {"fanqie_upper", "fanqie_lower"}
-COMBINED_CSV = str(paths.COMBINED_CSV if paths.COMBINED_CSV.exists()
+# The built table ships as parquet (the CSV is optional / not committed); only
+# fall back to the 2025 legacy CSV when no build output exists at all.
+COMBINED_CSV = str(paths.COMBINED_CSV
+                   if paths.COMBINED_CSV.exists() or paths.COMBINED_PARQUET.exists()
                    else paths.LEGACY_COMBINED_CSV)
 IPA_FILE = str(paths.IPA_LIBRARY_TXT)
 CACHE_DIR = str(paths.ROOT / "cache")
@@ -50,17 +50,66 @@ _HANZI_RE = re.compile(r"[㐀-鿿\U00020000-\U0002FFFF]")
 
 
 # =====================================================================
-# Google Cloud clients (Application Default Credentials)
+# Google Cloud clients
 # =====================================================================
+# Credentials, in order:
+#   1. GOOGLE_APPLICATION_CREDENTIALS (standard ADC key-file path) — local use;
+#   2. a ``[gcp_service_account]`` table in Streamlit secrets
+#      (.streamlit/secrets.toml locally, or the app's Secrets box on
+#      Streamlit Community Cloud) — how the hosted/phone deployment works;
+#   3. the legacy key file TTS/tts-robot-key.json (gitignored), if present.
+# Without any of them the clients are None and the app degrades gracefully
+# (no Google TTS/translation; every reading still shows).
+_LEGACY_KEY = paths.ROOT / "TTS" / "tts-robot-key.json"
+_DEFAULT_PROJECT_ID = "zach-ipa-tts-2025"
+
+
+def _secrets_service_account() -> dict | None:
+    try:
+        import streamlit as st
+        info = st.secrets.get("gcp_service_account")
+        return dict(info) if info else None
+    except Exception:          # no streamlit / no secrets file
+        return None
+
+
+@lru_cache(maxsize=1)
+def gcp_credentials():
+    """``(credentials or None, project_id)``. ``None`` credentials = let the
+    client library use Application Default Credentials."""
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return None, project or _DEFAULT_PROJECT_ID
+    try:
+        from google.oauth2 import service_account
+        info = _secrets_service_account()
+        if info:
+            creds = service_account.Credentials.from_service_account_info(info)
+            return creds, project or info.get("project_id") or _DEFAULT_PROJECT_ID
+        if _LEGACY_KEY.exists():
+            creds = service_account.Credentials.from_service_account_file(str(_LEGACY_KEY))
+            return creds, project or creds.project_id or _DEFAULT_PROJECT_ID
+    except Exception as e:
+        log.warning("Google service-account credentials unusable: %s", e)
+    return None, project or _DEFAULT_PROJECT_ID
+
+
+def _project_id() -> str:
+    return gcp_credentials()[1]
+
+
+def _parent() -> str:
+    """Translation API parent, from whichever credentials are in use."""
+    return f"projects/{_project_id()}/locations/global"
+
+
 @lru_cache(maxsize=1)
 def translate_client():
     try:
         from google.cloud import translate_v3 as translate
-        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-            return translate.TranslationServiceClient()
-        legacy = paths.ROOT / "TTS" / "tts-robot-key.json"
-        return (translate.TranslationServiceClient.from_service_account_file(str(legacy))
-                if legacy.exists() else translate.TranslationServiceClient())
+        creds, _ = gcp_credentials()
+        return (translate.TranslationServiceClient(credentials=creds) if creds
+                else translate.TranslationServiceClient())
     except Exception as e:
         log.warning("translate client unavailable: %s", e)
         return None
@@ -70,7 +119,9 @@ def translate_client():
 def tts_client():
     try:
         from google.cloud import texttospeech as gcp_tts
-        return gcp_tts.TextToSpeechClient()
+        creds, _ = gcp_credentials()
+        return (gcp_tts.TextToSpeechClient(credentials=creds) if creds
+                else gcp_tts.TextToSpeechClient())
     except Exception as e:
         log.warning("TTS client unavailable: %s", e)
         return None
@@ -85,7 +136,7 @@ def gtrans_translate_text(text: str, target: str, source: str | None = None) -> 
     if not cli or not text:
         return ""
     try:
-        req = {"parent": PARENT, "contents": [text], "target_language_code": target}
+        req = {"parent": _parent(), "contents": [text], "target_language_code": target}
         if source:
             req["source_language_code"] = source
         resp = cli.translate_text(request=req)
@@ -101,7 +152,7 @@ def gtrans_romanize(text: str, source_lang: str) -> str:
         return ""
     try:
         resp = cli.romanize_text(request={
-            "parent": PARENT, "contents": [text], "source_language_code": source_lang})
+            "parent": _parent(), "contents": [text], "source_language_code": source_lang})
         return resp.romanizations[0].romanized_text or "" if resp.romanizations else ""
     except Exception as e:
         log.warning("romanize_text failed: %s", e)
@@ -149,7 +200,7 @@ def _friendly_translate_error(e: Exception) -> str:
     if "RESOURCE_EXHAUSTED" in s or "429" in s:
         return ("Google Translation daily quota exceeded. It resets each day; to "
                 "lift it, raise the quota or confirm billing for project "
-                f"{PROJECT_ID} in the Google Cloud console.")
+                f"{_project_id()} in the Google Cloud console.")
     if "PERMISSION_DENIED" in s or "403" in s:
         return ("Translation API permission denied — enable the Cloud Translation "
                 "API and check the service-account has access.")
@@ -166,7 +217,7 @@ def translate_text(text: str, target: str, source: str | None = None) -> str:
     if cli is None:
         raise TranslationError("Translation client not initialized (no credentials).")
     try:
-        req = {"parent": PARENT, "contents": [text], "target_language_code": target}
+        req = {"parent": _parent(), "contents": [text], "target_language_code": target}
         if source:
             req["source_language_code"] = source
         resp = cli.translate_text(request=req)
@@ -185,8 +236,11 @@ def _tts_cache_path(token, lang, voice) -> Path:
     return p
 
 
-def tts_bytes(text: str, lang: str, voice: str | None) -> bytes:
-    p = _tts_cache_path(text, lang, voice or "")
+def tts_bytes(text: str, lang: str, voice: str | None, rate: float = 1.0) -> bytes:
+    # rate 1.0 keeps the historical cache key untouched; a slower rate (used for
+    # reading whole passages) gets its own cache entry so it never clashes.
+    vkey = (voice or "") if rate == 1.0 else f"{voice or ''}@r{rate}"
+    p = _tts_cache_path(text, lang, vkey)
     if p.exists():
         return p.read_bytes()
     cli = tts_client()
@@ -194,7 +248,8 @@ def tts_bytes(text: str, lang: str, voice: str | None) -> bytes:
         raise RuntimeError("Google Cloud TTS not available")
     from google.cloud import texttospeech as gcp_tts
     sinput = gcp_tts.SynthesisInput(text=text)
-    aconf = gcp_tts.AudioConfig(audio_encoding=gcp_tts.AudioEncoding.MP3)
+    aconf = gcp_tts.AudioConfig(audio_encoding=gcp_tts.AudioEncoding.MP3,
+                                speaking_rate=rate)
     try:
         vsel = gcp_tts.VoiceSelectionParams(language_code=lang, name=voice)
         data = cli.synthesize_speech(input=sinput, voice=vsel, audio_config=aconf).audio_content
@@ -409,7 +464,10 @@ def _read_wide_table(csv_path: str) -> pd.DataFrame:
     p_csv = Path(csv_path)
     p_parq = p_csv.with_suffix(".parquet")
     try:
-        if p_parq.exists() and p_parq.stat().st_mtime >= p_csv.stat().st_mtime:
+        # parquet wins if it is at least as new as the CSV — or the CSV is
+        # absent (a git clone / cloud deploy ships only the parquet)
+        if p_parq.exists() and (not p_csv.exists()
+                                or p_parq.stat().st_mtime >= p_csv.stat().st_mtime):
             return pd.read_parquet(p_parq).fillna("").astype(str)
     except Exception as e:
         log.warning("parquet mirror unreadable (%s) — falling back to CSV", e)
@@ -582,6 +640,30 @@ def s2t_text(text: str) -> str:
     except Exception:
         return text
     return out if len(out) == len(text) else text
+
+
+@lru_cache(maxsize=1)
+def _t2s_converter():
+    try:
+        import opencc
+        return opencc.OpenCC("t2s")
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=4096)
+def t2s_text(text: str) -> str:
+    """Traditional→simplified (OpenCC). mogher.com's 潮州音字典 is indexed by
+    SIMPLIFIED hanzi, so its per-character lookups must use the simplified form
+    (髮 → 发, which is where the reading + recording live). Returns ``text``
+    unchanged if OpenCC is unavailable."""
+    conv = _t2s_converter()
+    if not text or conv is None:
+        return text
+    try:
+        return conv.convert(text)
+    except Exception:
+        return text
 
 
 def per_char_tokens(data, dialect, s, alt=None):
@@ -953,7 +1035,7 @@ _CHAO_LETTER = {"1": "˩", "2": "˨", "3": "˧", "4": "˦", "5": "˥"}
 _SUP_TO_ASCII = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _SUP_RUN_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
 # a digit run attached to the end of a letter (syllable), not a bare number
-_TONE_DIGIT_RUN_RE = re.compile(r"(?<=[^\W\d_])[0-9]+")
+_TONE_DIGIT_RUN_RE = re.compile(r"(?<=[^\W\d_]|[̀-ͯ])[0-9]+")
 _CHAO_RUN_RE = re.compile(r"[˥˦˧˨˩]+")
 
 # In SIL fonts (Charis SIL / Gentium Plus) consecutive tone letters LIGATE into
@@ -962,17 +1044,16 @@ _CHAO_RUN_RE = re.compile(r"[˥˦˧˨˩]+")
 # to adjacent bars. app.py @imports these webfonts.
 CHAO_FONT_STACK = "'Charis SIL','Gentium Plus','Doulos SIL',sans-serif"
 
-# wide-CSV columns whose readings carry a tone-CLASS digit (not a contour)
+# wide-CSV columns whose readings carry a tone-CLASS digit (not a contour).
+# (Haikou and Tunxi used to: since the MCPDict loader maps each table's class
+# digits through that table's own 調值 metadata at ingest, they arrive as Chao
+# letters like every other locality.)
 TONE_CLASS_SCHEME = {
     "Cantonese": "jyutping", "Teochew": "teochew",
-    "Hainanese (Haikou)": "haikou", "dial:Min-Haikou": "haikou",
 }
 # columns whose digits are tone CATEGORIES, not pitch — never convert.
-# (dial:Hui-Tunxi: MCPDict 屯溪 has no verified 調值 table, so its readings
-# keep the honest class digit; converting 1→˩ would assert a false pitch.)
 CHAO_EXEMPT_COLS = {"Proto-Min", "Middle Chinese (Baxter)", "Middle Chinese",
-                    "Old Chinese", "Old Chinese (Zhengzhang)", "Tang",
-                    "dial:Hui-Tunxi"}
+                    "Old Chinese", "Old Chinese (Zhengzhang)", "Tang"}
 
 # IPA-only markers — tone letters, modifier letters, combining diacritics and
 # IPA-exclusive symbols. Distinguishes a true IPA reading (tʰĩ˥) from a plain
@@ -1295,6 +1376,39 @@ def _tailo_nasal(syl: str) -> bool:
     return bool(re.search(r"nnh?$", base))
 
 
+# IPA (non-ascii) → tâi-lô-ascii, so a stored Hokkien reading can be matched
+# segmentally against the syllable ithuan speaks. Aspirates/affricates first
+# (longest wins); plain ascii letters (p b m t n l k g h s a e i o u) pass
+# through. ɨ → 'y' (a Quanzhou vowel ithuan never says, so it stays unmatched).
+_IPA_SKEL = [("tɕʰ", "tsh"), ("tsʰ", "tsh"), ("tɕ", "ts"), ("dʑ", "j"),
+             ("dz", "j"), ("pʰ", "ph"), ("tʰ", "th"), ("kʰ", "kh"),
+             ("ɕ", "s"), ("ʑ", "j"),
+             # rimes where tâi-lô spells the vowel differently from the IPA
+             # (iong, ing, ian, o…). Longer/medial forms first so 'iəŋ'→ing, not 'iing'.
+             ("iəŋ", "ing"), ("iək", "ik"), ("ɔŋ", "ong"), ("ɔk", "ok"),
+             ("əŋ", "ing"), ("ək", "ik"), ("iɛ", "ia"), ("ɤ", "o"),
+             ("ŋ", "ng"), ("ɔ", "oo"), ("ə", "e"), ("ɨ", "y"), ("ʔ", "")]
+
+
+def _ipa_skel(base: str) -> str:
+    """Toneless tâi-lô-ascii skeleton of an IPA reading's base (``kin`` → 'kin',
+    ``d͡ʑin`` → 'jin'), for comparison with a spoken tâi-lô syllable."""
+    d = unicodedata.normalize("NFD", base or "")
+    nasal = "̃" in d                       # combining tilde = nasal vowel
+    s = "".join(c for c in d if not unicodedata.combining(c)
+                and c not in "˥˦˧˨˩ ")
+    for a, b in _IPA_SKEL:
+        s = s.replace(a, b)
+    s = s.strip().lower()
+    return s + "nn" if (nasal and not s.endswith("nn")) else s
+
+
+def _tailo_skel(syl: str) -> str:
+    """Toneless ascii skeleton of a tâi-lô syllable (``kīn`` → 'kin')."""
+    return "".join(c for c in unicodedata.normalize("NFD", syl or "")
+                   if not unicodedata.combining(c)).strip().lower()
+
+
 def tailo_matched_tokens(data, dialect, s, alt, kip):
     """``per_char_tokens`` with ithuan's tâi-lô as referee: among a character's
     alternate readings, prefer one whose citation tone class (and then
@@ -1320,19 +1434,28 @@ def tailo_matched_tokens(data, dialect, s, alt, kip):
             opts = split_opts(data.get(alt[i], {}).get(dialect, ""))
         if len(opts) < 2:
             continue
+        # candidates whose citation tone class matches the spoken syllable
+        cand = [(tok, info[0]) for tok in opts
+                if (info := _syllable_tone(tok, "poj")) and info[1] == kcls]
+        if not cand:
+            continue
+        # 1) prefer an alternate whose SEGMENTS match the spoken syllable — so a
+        #    literary/colloquial pair sharing a tone (近 kīn vs kūn, both class 7)
+        #    resolves to the reading ithuan actually says, not just the first
+        #    listed. This is what keeps the shown reading == the spoken one.
+        kskel = _tailo_skel(syl)
+        seg = [tok for tok, base in cand if _ipa_skel(base) == kskel]
+        if seg:
+            out[i] = (ch, seg[0])
+            continue
+        # 2) else fall back to nasality agreement, then the first tone-class match
         knasal = _tailo_nasal(syl)
-        best = None
-        for tok in opts:
-            info = _syllable_tone(tok, "poj")
-            if not info or info[1] != kcls:
-                continue
-            if best is None:
-                best = tok
+        best = cand[0][0]
+        for tok, _base in cand:
             if ("̃" in unicodedata.normalize("NFD", tok)) == knasal:
                 best = tok
                 break
-        if best:
-            out[i] = (ch, best)
+        out[i] = (ch, best)
     return out
 
 
@@ -1512,6 +1635,18 @@ def _pengim_initial(base: str) -> str:
     return ""
 
 
+def _pengim_norm(s: str) -> str:
+    """Fuzzy key matching two Peng'im spellings that differ only in romanisation
+    — combining diacritics (mogher's ``ê`` vs our ``e``) and checked-coda voicing
+    (``-k``/``-g``, ``-p``/``-b``, ``-t``/``-d``) — so our seed ``zek8`` matches
+    mogher's ``zêg8``, while ``ki3`` still does NOT match ``kui3`` (different
+    rime)."""
+    s = "".join(c for c in unicodedata.normalize("NFD", (s or "").lower())
+                if not unicodedata.combining(c))
+    return re.sub(r"([kpt])(\d)$",
+                  lambda m: {"k": "g", "p": "b", "t": "d"}[m.group(1)] + m.group(2), s)
+
+
 def _pengim_initials_for_tailo(syl: str):
     base = "".join(c for c in unicodedata.normalize("NFD", (syl or "").lower())
                    if not unicodedata.combining(c))
@@ -1536,23 +1671,66 @@ def _teochew_cognate_score(tok: str, kcls: str, initials) -> int:
 
 
 MOGHER_CHAR_URL = "https://www.mogher.com/{}"
-_MOGHER_READING_RE = re.compile(r'href="/dic/czpy/([a-zê]+\d)"')
+# A reading link, optionally followed by mogher's 文/白/训 (wendu) badge. 训读 is a
+# semantic GLOSS reading — 二's ``no6`` 训 is really the word "two" (兩), not 二's
+# own sound — so the type is captured to prefer 文 (literary) / 白 (colloquial).
+_MOGHER_READING_RE = re.compile(
+    r'/dic/czpy/([a-zê]+\d)"[^>]*>\s*[a-zê0-9]+\s*'
+    r'(?:<label[^>]*wendu-label[^>]*>\s*([^<\s]+)\s*</label>)?')
+
+
+def _mogher_char_parse(ch: str) -> list[tuple[str, str]]:
+    """``[(pengim, type)]`` mogher lists for one character, type ∈ 文/白/训/''.
+    Queries the SIMPLIFIED form (mogher's index) and disk-caches under it."""
+    import requests
+    q = t2s_text(ch)
+    p = _tts_cache_path(q, "readings-typed", "mogher").with_suffix(".txt")
+    if p.exists():
+        t = p.read_text("utf-8").strip()
+        out = []
+        for x in (t.split(",") if t else []):
+            rd, _, ty = x.partition("|")
+            if rd:
+                out.append((rd, ty))
+        return out
+    r = requests.get(MOGHER_CHAR_URL.format(q), timeout=30)
+    pairs, seen = [], set()
+    if r.ok:
+        for rd, ty in _MOGHER_READING_RE.findall(r.text):
+            if rd not in seen:
+                seen.add(rd)
+                pairs.append((rd, ty or ""))
+        p.write_text(",".join(f"{rd}|{ty}" for rd, ty in pairs), "utf-8")
+    return pairs
 
 
 def mogher_char_readings(ch: str) -> list[str]:
-    """Every Peng'im reading mogher's dictionary lists for one character
-    (the missing-doublet source for the cognate referee). Disk-cached."""
-    import requests
-    p = _tts_cache_path(ch, "readings", "mogher").with_suffix(".txt")
-    if p.exists():
-        t = p.read_text("utf-8").strip()
-        return t.split(",") if t else []
-    r = requests.get(MOGHER_CHAR_URL.format(ch), timeout=30)
-    outs = list(dict.fromkeys(_MOGHER_READING_RE.findall(r.text))) \
-        if r.ok else []
-    if r.ok:
-        p.write_text(",".join(outs), "utf-8")
-    return outs
+    """Every Peng'im reading mogher's dictionary lists for one character (the
+    missing-doublet source for the cognate referee and the audio speller),
+    page order preserved. mogher is indexed by SIMPLIFIED hanzi, so the query
+    uses the simplified form — otherwise a traditional-only glyph (髮) finds
+    nothing while its simplified twin (发 → huêg4) has the reading and
+    recording. Disk-cached under the simplified key so 髮/发 share one entry."""
+    return [rd for rd, _ in _mogher_char_parse(ch)]
+
+
+def teochew_node_reading(ch: str) -> str:
+    """The Teochew reading(s) for the sound-evolution tree node, taken from
+    mogher — the SAME source as the panel's Teochew row and the phrase-sandhi
+    line — so the tree agrees with them instead of showing Wiktionary's
+    divergent Peng'im (which can surface a whole different lexical reading).
+    EVERY reading mogher lists (文/白/训/俗 alike), each rendered as a Chao-tone
+    Peng'im and space-joined; ``""`` when mogher lists nothing, so the caller
+    falls back to Wiktionary or the dataset column. 俗讀 (slang/vernacular) is
+    kept but demoted to the end, the same de-prioritising the reading picker
+    uses, so the standard 文/白/训 readings lead."""
+    try:
+        parsed = _mogher_char_parse(ch)
+    except Exception:
+        parsed = []
+    ordered = ([r for r, t in parsed if t != "俗"]
+               + [r for r, t in parsed if t == "俗"])
+    return " ".join(wikt_rom_to_chao(r, "teochew") for r in ordered)
 
 
 def teochew_tailo_matched_tokens(data, dialect, s, alt, kip):
@@ -1638,34 +1816,121 @@ def _mogher_variants(syl: str):
     return out
 
 
-def teochew_syllable_mp3(syl: str) -> bytes:
-    """One mogher.com recording for a Peng'im syllable+tone (``ho2``).
-    Raises when mogher lists no recording for it (or any spelling variant) —
-    coverage is genuinely partial (e.g. ho2/ho7 recorded but not ho6), so
-    that outcome is remembered in a ``.miss`` marker to spare the network."""
+def _mogher_fetch(syl: str) -> bytes | None:
+    """One mogher.com recording for an EXACT Peng'im syllable+tone, or
+    ``None`` when it (and its spelling variants) isn't recorded. Both hits
+    and confirmed misses are disk-cached to spare the network; a transient
+    download failure is not cached, so it can be retried later."""
     import requests
     p = _tts_cache_path(syl, "nan-teochew", "mogher")
     miss = p.with_suffix(".miss")
     if p.exists():
         return p.read_bytes()
     if miss.exists():
-        raise RuntimeError(f"mogher.com has no recording for {syl}")
-    why = None
+        return None
+    saw_page = False
     for v in _mogher_variants(syl):
         r = requests.get(MOGHER_PAGE_URL.format(v), timeout=30)
         m = _MOGHER_MP3_RE.search(r.text) if r.ok else None
         if not m:
             continue
+        saw_page = True                  # mogher lists a recording for it
         a = requests.get(MOGHER_SOUND_URL.format(m.group(1)), timeout=30)
         if a.ok and len(a.content) > 512 and (
                 a.content.startswith(b"ID3") or a.content[:1] == b"\xff"):
             p.write_bytes(a.content)
             return a.content
-        why = f"mogher.com: audio fetch failed for {m.group(1)!r} ({syl})"
-    if why is None:                      # pages answered, just no recording
-        miss.touch()
-        why = f"mogher.com has no recording for {syl}"
-    raise RuntimeError(why)
+    if not saw_page:                     # pages answered, just no recording
+        miss.touch()                     # (a failed download stays retryable)
+    return None
+
+
+def teochew_syllable_mp3(syl: str) -> bytes:
+    """One mogher.com recording for an exact Peng'im syllable+tone (``ho2``).
+    Raises when mogher lists no recording for it (or any spelling variant)."""
+    got = _mogher_fetch(syl)
+    if got is None:
+        raise RuntimeError(f"mogher.com has no recording for {syl}")
+    return got
+
+
+def _teochew_reading_candidates(ch: str, reading: str,
+                                literary: bool = False) -> list[str]:
+    """Peng'im spellings to voice character ``ch``, in priority order:
+    mogher.com's OWN readings for the character (best match to our ``reading``
+    first) followed by our own reading as a final fallback. mogher's spelling
+    guarantees a matching mp3 filename, and mogher records only SOME of the
+    readings it lists (思 lists ``se1`` but only recorded ``si1``), so the audio
+    path walks this list until one is actually recorded rather than going silent
+    on the top pick.
+
+    mogher marks four reading types: 文 (literary), 白 (colloquial), 训 (训读) and
+    俗 (俗讀, slang/nonstandard — 一 ``ieu1`` — always demoted last). Which of the
+    real readings is right is per-WORD (天氣 wants 文 ``ki3``; 一起 wants 训 ``zêg8``;
+    食 wants 白 ``ziah8``), so no fixed register order works. The heuristic:
+
+    * ``literary`` (文讀 recitation): prefer 文, else mogher's page order.
+    * natural (default): TRUST our dataset ``reading`` when it names an everyday
+      (白/训) reading — that's where our curated data is reliable (一 ``zêg8``, 二
+      ``no6``, 人 ``nang5``) — matched fuzzily so ``zek8`` ≈ ``zêg8``. Otherwise
+      (our seed is literary, e.g. 食 ``su6``/大 ``dai6``, or has no everyday match)
+      fall back to mogher's OWN order, whose first entry is the most-common reading
+      (氣 → ``ki3``, 不 → ``bug4``, 食 → ``ziah8``).
+
+    A stable sort preserves mogher's page order within each tier."""
+    try:
+        parsed = _mogher_char_parse(ch)
+    except Exception:
+        parsed = []
+    info = _syllable_tone(reading, "teochew")
+    own = (info[0] + info[1]) if info else reading
+    seed = _pengim_norm(own) if info else None
+
+    def rank(rt):
+        c, ty = rt
+        if ty == "俗":
+            return 3                                   # slang/nonstandard — last
+        if literary:
+            return 0 if ty == "文" else 1              # 文讀: literary first
+        if ty in ("白", "训") and seed and _pengim_norm(c) == seed:
+            return 0                                   # our data's everyday reading
+        return 1                                       # else mogher's own order
+
+    cands = [c for c, _ in sorted(parsed, key=rank)]   # stable → page order in tier
+    return list(dict.fromkeys([*cands, own]))
+
+
+def mogher_reading_for(ch: str, reading: str) -> str | None:
+    """mogher.com's OWN Peng'im spelling for character ``ch`` that best matches
+    our ``reading`` (our 霜 ``sng1`` → mogher ``seng1``, our 明 ``meng5`` →
+    ``mêng5``), or ``None`` when mogher lists none. See
+    ``_teochew_reading_candidates`` for the ranking."""
+    try:
+        cands = mogher_char_readings(ch)
+    except Exception:
+        cands = []
+    if not cands:
+        return None
+    return _teochew_reading_candidates(ch, reading)[0]
+
+
+def teochew_voiced_reading(ch: str, reading: str, literary: bool = False) -> str:
+    """The Peng'im reading actually spoken for character ``ch`` — so the reader
+    can SHOW the same romanisation it plays (mogher's Peng'im, which is what
+    the recording is). Walks the candidate readings and returns the first one
+    mogher has actually recorded (probing warms the mp3 cache the audio then
+    reuses); falls back to mogher's top reading, then our own. This also
+    rescues characters whose stored Teochew reading is IPA, not Peng'im (床
+    ``t͡sʰɯŋ55`` → mogher ``ceng5``), which otherwise silence the whole line.
+    ``literary`` selects 文讀 recitation (see ``_teochew_reading_candidates``)."""
+    cands = _teochew_reading_candidates(ch, reading, literary)
+    for c in cands:
+        try:
+            if _mogher_fetch(c) is not None:
+                return c
+        except Exception:
+            pass
+    return cands[0] if cands else reading
 
 
 def _mp3_frames(mp3: bytes) -> bytes:
@@ -1696,12 +1961,12 @@ _TEOCHEW_SANDHI_AUDIO = {"1": "1", "2": "6", "3": "2", "4": "8",
                          "5": "6", "6": "7", "7": "6", "8": "4"}
 
 
-def teochew_audio_plan(pairs, spoken: bool):
-    """``[pengim, …]`` — one syllable+tone per Hanzi char, ready for
-    ``teochew_syllable_mp3``. ``spoken=True`` replaces each non-group-final
-    syllable's tone with the citation tone nearest its sandhi contour
-    (groups split at non-Hanzi chars, as in phrase_surface_tones).
-    ``None`` when any character lacks a plain Peng'im reading."""
+def _teochew_audio_units(pairs, spoken: bool):
+    """``[(char, reading, sandhi), …]`` — one entry per Hanzi char, carrying
+    the char (so audio can use mogher's own spelling), its citation reading,
+    and whether it takes a sandhi tone (non-group-final in ``spoken`` mode;
+    groups split at non-Hanzi chars, as in phrase_surface_tones). ``None``
+    when any character lacks a plain Peng'im reading."""
     groups, cur = [], []
     for ch, tok in pairs:
         if not looks_like_hanzi(ch):
@@ -1709,30 +1974,76 @@ def teochew_audio_plan(pairs, spoken: bool):
                 groups.append(cur)
                 cur = []
             continue
-        cur.append(tok)
+        cur.append((ch, tok))
     if cur:
         groups.append(cur)
-    plan = []
+    units = []
     for g in groups:
-        for i, tok in enumerate(g):
+        for i, (ch, tok) in enumerate(g):
             info = _syllable_tone(tok, "teochew") if tok else None
             if not info or not re.fullmatch(r"[a-zê]+", info[0]):
                 return None
-            base, cls, _ = info
-            if spoken and i < len(g) - 1:
-                cls = _TEOCHEW_SANDHI_AUDIO.get(cls, cls)
-            plan.append(base + cls)
-    return plan or None
+            units.append((ch, tok, spoken and i < len(g) - 1))
+    return units or None
 
 
-def teochew_phrase_mp3(pairs, spoken: bool) -> bytes | None:
-    """Stitched mogher recordings for a phrase — citation tones, or the
-    sandhi-approximated "spoken" variant. ``None`` when a reading is
-    missing; raises when mogher lacks a recording."""
-    plan = teochew_audio_plan(pairs, spoken)
-    if not plan:
+def teochew_audio_plan(pairs, spoken: bool):
+    """``[pengim, …]`` — one syllable+tone per Hanzi char. ``spoken=True``
+    replaces each non-group-final syllable's tone with the citation tone
+    nearest its sandhi contour. ``None`` when a reading is missing."""
+    units = _teochew_audio_units(pairs, spoken)
+    if not units:
         return None
-    return b"".join(_mp3_frames(teochew_syllable_mp3(s)) for s in plan)
+    out = []
+    for _, tok, sandhi in units:
+        base, cls, _ = _syllable_tone(tok, "teochew")
+        if sandhi:
+            cls = _TEOCHEW_SANDHI_AUDIO.get(cls, cls)
+        out.append(base + cls)
+    return out
+
+
+def _teochew_unit_mp3(ch: str, reading: str, sandhi: bool) -> bytes:
+    """One recording for a phrase character. Accuracy first: the character is
+    voiced with mogher's OWN reading (native, correct citation tone) in
+    preference to our possibly-differently-spelled syllable, walking the
+    candidate readings until one is actually recorded (mogher lists more
+    readings than it records). For a non-final (sandhi) syllable the nearest
+    citation tone is tried first, then the plain citation recording — never a
+    different syllable. Raises when NONE of the candidates is recorded."""
+    last = RuntimeError(f"mogher.com has no recording for {reading}")
+    for syl in _teochew_reading_candidates(ch, reading):
+        info = _syllable_tone(syl, "teochew")
+        if not info:
+            continue
+        base, cls = info[0], info[1]
+        for want in ([base + _TEOCHEW_SANDHI_AUDIO.get(cls, cls)] if sandhi
+                     else []) + [base + cls]:
+            try:
+                return teochew_syllable_mp3(want)
+            except RuntimeError as e:
+                last = e
+    raise last
+
+
+def teochew_phrase_mp3(pairs, spoken: bool) -> tuple[bytes | None, list[str]]:
+    """``(mp3, missing)`` — mogher recordings stitched for a phrase (citation
+    tones, or the sandhi-approximated "spoken" variant). A character mogher
+    doesn't cover (rare literary glyphs like 蕭 aren't in its dictionary, and
+    no other native Teochew recording source exists) is SKIPPED rather than
+    silencing the whole line, and returned in ``missing`` so the caller can
+    say which. ``mp3`` is ``None`` only when a reading is missing outright or
+    nothing at all could be voiced."""
+    units = _teochew_audio_units(pairs, spoken)
+    if not units:
+        return None, []
+    frames, missing = [], []
+    for ch, tok, sandhi in units:
+        try:
+            frames.append(_mp3_frames(_teochew_unit_mp3(ch, tok, sandhi)))
+        except RuntimeError:
+            missing.append(ch)
+    return (b"".join(frames) if frames else None), missing
 
 
 def romanization_to_english(reading: str, scheme: str | None = None) -> str:
@@ -1941,6 +2252,55 @@ MC_INITIALS = {
     "見": ("k", "k"), "溪": ("kʰ", "k (aspirated)"), "羣": ("ɡ", "g (voiced)"), "群": ("ɡ", "g (voiced)"), "疑": ("ŋ", "ng"),
     "影": ("ʔ", "glottal stop"), "曉": ("x", "h"), "匣": ("ɣ", "h (voiced)"), "云": ("ɦ/j", "glide"), "雲": ("ɦ/j", "glide"), "以": ("j", "y-glide"),
 }
+
+# What each initial actually SOUNDS like, in plain English, for the newbie
+# breakdown — "like the s in 'see'" rather than a bare "s". Aspirated = a puff of
+# air after the stop; retroflex = tongue curled back; palatal = tongue near the
+# hard palate (a built-in -y- colour); voiced = the vocal cords buzz throughout.
+MC_INITIAL_HINT = {
+    "幫": "like the p in “spin” (no puff of air)",
+    "滂": "like the p in “pin” (with a puff of air)",
+    "並": "like the b in “bin” (voiced)",
+    "明": "like the m in “me”",
+    "端": "like the t in “stop” (no puff)",
+    "透": "like the t in “top” (with a puff)",
+    "定": "like the d in “do” (voiced)",
+    "泥": "like the n in “no”",
+    "來": "like the l in “law”",
+    "知": "a t with the tongue curled back (retroflex)",
+    "徹": "a curled-back t with a puff of air",
+    "澄": "a voiced curled-back d",
+    "娘": "an n with the tongue curled back",
+    "孃": "an n with the tongue curled back",
+    "精": "like the ts in “cats”",
+    "清": "“ts” with a puff of air",
+    "從": "a voiced “dz” (like the ds in “adze”)",
+    "心": "like the s in “see”",
+    "邪": "like the z in “zoo”",
+    "莊": "“ts” with the tongue curled back",
+    "初": "curled-back “ts” with a puff",
+    "崇": "a voiced curled-back “dz”",
+    "生": "“sh” with the tongue curled back",
+    "俟": "a voiced curled-back “sh” (like the s in “measure”)",
+    "章": "like the j in “jeep”, but softer (palatal)",
+    "昌": "like the ch in “cheese” (palatal, with a puff)",
+    "常": "a voiced palatal “j”",
+    "禪": "a voiced palatal “j”",
+    "書": "like the sh in “she” (palatal)",
+    "船": "a voiced palatal “sh” (like the s in “vision”)",
+    "日": "like the ny in “canyon” (palatal n)",
+    "見": "like the k in “sky” (no puff)",
+    "溪": "like the k in “key” (with a puff)",
+    "羣": "like the g in “go” (voiced)",
+    "群": "like the g in “go” (voiced)",
+    "疑": "like the ng in “sing” — but at the START of the syllable",
+    "影": "a catch in the throat (the little stop in “uh-oh”)",
+    "曉": "a raspy h, like the ch in Scottish “loch”",
+    "匣": "a voiced raspy h (like 曉 but with the voice switched on)",
+    "云": "a smooth voiced onset — a soft h, or the y- in “yes”",
+    "雲": "a smooth voiced onset — a soft h, or the y- in “yes”",
+    "以": "like the y in “yes”",
+}
 MC_HU = {"開": "開 open (plain)", "合": "合 rounded (-w-)"}
 MC_DIV = {"一": "I", "二": "II", "三": "III", "四": "IV"}
 MC_TONE = {"平": "平 level", "上": "上 rising", "去": "去 departing", "入": "入 entering (-p/-t/-k)"}
@@ -1975,7 +2335,7 @@ MC_RIMES = {
 # single pass, so a generated letter (e.g. tɕ→"j") is not re-scanned (j→"y").
 _MC_READ = {"tɕʰ": "ch", "tʂʰ": "chr", "ʈʰ": "tr", "tɕ": "j", "tʂ": "jr",
             "dʑ": "j", "dʐ": "jr", "ʈ": "tr", "ɖ": "dr", "ɕ": "sh", "ʑ": "zh",
-            "ʂ": "sh", "ʐ": "r", "ɣ": "gh", "ɦ": "h", "ŋ": "ng", "ɲ": "ny",
+            "ʂ": "sh", "ʐ": "r", "ɣ": "gh", "ɦ": "h", "x": "h", "ŋ": "ng", "ɲ": "ny",
             "ʔ": "'", "ɐ": "a", "ʌ": "u", "ɨ": "i", "ə": "uh", "j": "y",
             # vowels/modifiers that appear in the stored MC (Baxter) IPA readings
             # (and some coarse rime finals) — spelled so nothing raw leaks through.
@@ -2058,7 +2418,7 @@ def parse_mc_position(code: str) -> dict | None:
             hu = c
         elif c in MC_DIV:
             div = c
-        elif c in "AB":
+        elif c in "ABC":  # 類 marker (重紐 A/B pair, or C = ordinary III); not a rime char
             chongniu = c
         else:
             rime.append(c)
@@ -2066,11 +2426,23 @@ def parse_mc_position(code: str) -> dict | None:
             "rime": "".join(rime), "tone": tone}
 
 
+# What the division (等) contributes to the VOWEL — grade I–IV set how open and
+# how front the vowel is, and whether a -y- on-glide slips in before it.
 MC_DIV_HINT = {
-    "一": "a plain, back-ish vowel; no -y- glide",
-    "二": "a more open vowel (often with retroflex initials)",
-    "三": "has a -y-/-i- like medial (palatal)",
-    "四": "a front vowel with an -i- like quality",
+    "一": "a plain, open back vowel — no -y- glide (the “darkest” colour)",
+    "二": "a low, open vowel with the tongue drawn back — often a harder, retroflex colour",
+    "三": "slips a -y- on-glide before the vowel (palatal), like the y in “yes”",
+    "四": "a close front vowel — an -ee-/-i- quality, like the ee in “see”",
+}
+
+# 類 (chóngniǔ) sub-type of a division-III syllable, folded into the 三 line as a
+# clause rather than shown as its own lone-letter row. A/B are the two members of
+# a 重紐 minimal pair (only 唇牙喉 initials in a few rhymes) — a subtle difference
+# in how strong/front the -y- palatal colour is. C (ordinary III, no such pair)
+# adds nothing to the sound, so it gets no clause at all.
+MC_CHONGNIU_CLAUSE = {
+    "A": "重紐 type A — the clearer, more -y-like variety",
+    "B": "重紐 type B — the heavier, retracted variety",
 }
 
 
@@ -2088,31 +2460,73 @@ def mc_readable_syllable(code: str, mc_ipa: str = "") -> str:
     return _mc_readable(syl) if syl else ""
 
 
+def _mc_segments(readable: str):
+    """Split a respelled MC syllable into (onset, medial-glides, rhyme-tail):
+    ``ghywot`` → ``('gh', 'yw', 'ot')``. Medials are the -y- (division/palatal)
+    and -w- (rounding) on-glides; the tail is the core vowel + ending. Lets the
+    breakdown hand each sound piece to the code element that supplies it."""
+    if not readable:
+        return "", "", ""
+    n = len(readable)
+    i = 2 if readable[:2] == "ny" else 0     # ɲ ('ny') is one onset, not n + -y-
+    while i < n and readable[i] not in "aeiouyw":
+        i += 1
+    onset, j = readable[:i], i
+    while j < n and readable[j] in "yw":
+        j += 1
+    return onset, readable[i:j], readable[j:]
+
+
+_MC_CODA_NOTE = {"ng": "an -ng nasal", "n": "an -n", "m": "an -m",
+                 "p": "a hard -p stop", "t": "a hard -t stop", "k": "a hard -k stop",
+                 "y": "an -i off-glide", "w": "a -u off-glide"}
+
+
+def _mc_coda_note(tail: str) -> str:
+    for e in ("ng", "p", "t", "k", "n", "m", "y", "w"):
+        if tail.endswith(e):
+            return _MC_CODA_NOTE[e]
+    return "no consonant — an open vowel"
+
+
 def mc_position_breakdown(code: str, mc_ipa: str = ""):
-    """Per-character elucidation: list of (glyph, role-explanation) for a code,
-    in reading order, so a beginner sees what each character contributes. When
-    ``mc_ipa`` is supplied the rhyme's final is read off the char's actual stored
-    reading, keeping it consistent with the reading chip and fanqie breakdown."""
+    """Per-element breakdown of a 音韻地位 code — a list of (glyph, explanation)
+    in reading order. Each line names the actual SOUND the element adds to the
+    reconstructed syllable (with a plain-English "like ___" example) and, for the
+    glides and rhyme, the exact piece of the readable syllable it supplies — so
+    云合三C元入 → gh- · -w- · -y- · -ot is spelled out, not merely labelled. The
+    readable is anchored on the char's stored reading (``mc_ipa``) when given."""
     p = parse_mc_position(code)
     if not p:
         return []
-    reading = _mc_reading_syllable(mc_ipa)
+    syl = _mc_reading_syllable(mc_ipa) or _mc_syllable_ipa(p)
+    onset, med, tail = _mc_segments(_mc_readable(syl) if syl else "")
     rows = []
     if p["initial"]:
-        ini = MC_INITIALS.get(p["initial"])
-        rows.append((p["initial"],
-                     f"the initial consonant — {ini[1]}" if ini else "the initial consonant"))
+        hint = MC_INITIAL_HINT.get(p["initial"])
+        if not hint:
+            ini = MC_INITIALS.get(p["initial"])
+            hint = ini[1] if ini else ""
+        piece = f"“{onset}-”, " if onset else ""
+        rows.append((p["initial"], f"the initial consonant — {piece}{hint}"))
     if p["hu"]:
-        rows.append((p["hu"], "rounding — rounded, adds a -w- glide"
-                     if p["hu"] == "合" else "rounding — open, no -w-"))
+        rows.append((p["hu"], "rounding: adds a -w- lip-glide, like the w in “well”"
+                     if p["hu"] == "合" else "no rounding: lips neutral/spread (plain)"))
     if p["div"]:
-        rows.append((p["div"], f"division (grade) {MC_DIV[p['div']]} — {MC_DIV_HINT.get(p['div'], '')}"))
-    if p["chongniu"]:
-        rows.append((p["chongniu"], f"chóngniǔ sub-type {p['chongniu']}"))
+        label = f"division {MC_DIV[p['div']]}"
+        clause = MC_CHONGNIU_CLAUSE.get(p["chongniu"])   # A/B only; C adds nothing
+        if clause:
+            label += f" ({clause})"
+        rows.append((p["div"], f"{label}: {MC_DIV_HINT.get(p['div'], '')}"))
     if p["rime"]:
-        fin = _mc_final_of(p, reading) if reading else MC_RIMES.get(p["rime"])
-        rows.append((p["rime"], f"the rhyme — its vowel + ending, roughly “-{_mc_readable(fin)}”"
-                     if fin else "the rhyme — its vowel + ending"))
+        if not tail:                     # no stored reading → coarse rime table
+            fin = MC_RIMES.get(p["rime"])
+            _, _, tail = _mc_segments(_mc_readable(fin) if fin else "")
+        if tail:
+            rows.append((p["rime"], f"the rhyme — the core vowel + ending “-{tail}” "
+                                    f"({_mc_coda_note(tail)})"))
+        else:
+            rows.append((p["rime"], "the rhyme — the core vowel + ending"))
     if p["tone"]:
         rows.append((p["tone"], f"the tone — {MC_TONE_PLAIN.get(p['tone'], p['tone'])}"))
     return rows

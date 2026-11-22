@@ -59,7 +59,14 @@ def load(path=UNIHAN_TXT) -> list[dict]:
             except ValueError:
                 continue
             cleaned = _clean(field, value)
-            if cleaned:
+            if not cleaned:
+                continue
+            if field == "kVietnamese":
+                # one record per reading, so other Hán-Việt sources dedupe
+                # against each word instead of the space-joined string
+                for tok in dict.fromkeys(cleaned.split()):
+                    records.append(record(char, col, tok, SRC_UNIHAN))
+            else:
                 records.append(record(char, col, cleaned, SRC_UNIHAN))
     return records
 

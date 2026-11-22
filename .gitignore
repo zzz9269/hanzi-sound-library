@@ -2,19 +2,29 @@
 TTS/tts-robot-key.json
 *-key.json
 *.credentials.json
+.streamlit/secrets.toml
+.env
 
 # --- Generated / cached data ---
-data/raw/
-data/out/
+# The app-facing build outputs ARE committed (the hosted app has no build
+# step): data/out/combined_readings.parquet + data/out/readings_long.parquet.
+data/out/*.csv
+data/out/*.bak
+# Source caches are committed (small, and kaikki's comes from a 1.1 GB dump)
+# except the bulky / regenerable ones:
+data/raw/unihan/Unihan.zip
+data/raw/mcpdict/haikou.tsv
+data/raw/mcpdict/tunxi.tsv
 cache/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.pytest_cache/
 
-# --- Large intermediate artifacts (regenerable from sources) ---
+# --- Superseded / scratch ---
+atcre/
 combined_dialects.csv
 _v9_dump.txt
 baseline_ml_eval.txt
-.pytest_cache/
 newfeat_ml_eval.txt
 rebuild_log.txt

@@ -44,6 +44,15 @@ def main(argv: list[str] | None = None) -> None:
     paths.ensure_dirs()
     t0 = time.time()
 
+    # Fresh clone: fetch the (small, commit-pinned) MCPDict tables if absent.
+    from .sources import mcpdict
+    if mcpdict.missing_files():
+        try:
+            mcpdict.download()
+            print("[build] fetched MCPDict tables")
+        except Exception as e:  # offline → build with whatever is cached
+            print(f"[build] MCPDict download skipped ({type(e).__name__}: {e})")
+
     long_df, wide_df = merge.build(
         use_wiktionary=not args.no_wiktionary,
         refresh_wiktionary=args.refresh_wiktionary,

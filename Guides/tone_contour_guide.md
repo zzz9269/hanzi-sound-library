@@ -24,8 +24,12 @@ The same melody is often written as **digits** instead of bars (55 = `˥˥`,
 unified form — Chao tone letters — everywhere**: source digits that denote a
 pitch contour (`tʰi⁵³`, `tʰin213`) are converted on display, and romanisations
 that carry only a tone *class* digit (Jyutping `tin1`, Peng'im `tiang1`,
-Haikou `hi1`, Wugniu `8laq`) are shown with that class's **citation contour**
-as tone letters instead (`tin˥˥`, `tiang˧˧`, `hi˨˦`, `laq˩˨`). The provenance
+Wugniu `8laq`) are shown with that class's **citation contour**
+as tone letters instead (`tin˥˥`, `tiang˧˧`, `laq˩˨`). The 漢字音典 (MCPDict)
+tables also store class digits; those are converted at build time using each
+table's own 調值 list, and — where a column already has Wiktionary readings —
+rendered with the contour that source uses for the same tone category, so a
+column reads consistently. The provenance
 panel keeps the original source spellings.
 
 Two kinds of superscript number remain and are **deliberately not converted**,
