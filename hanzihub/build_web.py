@@ -466,7 +466,52 @@ def chaozhou_syllables(data: dict) -> set:
             if (p := chaozhou_pengim(a))}
 
 
+# Per-syllable recordings hosted with the app (web/audio/):
+#   cmn/  Mandarin, hugolpz/audio-cmn "syllabs v.2" (speaker Chen Wang, CC BY-SA)
+#   vie/  Vietnamese, Wikimedia Commons recordings by Hanoi speakers only
+#         (Lingua Libre "Penn Zero MSSJ", CC0; Vi-hanoi, CC BY-SA 3.0).
+#         Southern-speaker recordings are left out: the readings are Northern.
+# See web/audio/CREDITS.md. A syllable with no recording gets no key.
+AUDIO_DIR = Path(__file__).resolve().parent.parent / "web" / "audio"
+_TONE_MARK = {"\u0304": "1", "\u0301": "2", "\u030C": "3", "\u0300": "4"}
+
+
+def _audio_files(sub: str) -> set:
+    d = AUDIO_DIR / sub
+    return {f.name for f in d.iterdir()} if d.is_dir() else set()
+
+
+CMN_FILES = _audio_files("cmn")
+VIE_FILES = _audio_files("vie")
+
+
+def pinyin_numbered(py: str) -> str:
+    """xíng → xing2, lǜ → lv4. "" for the neutral tone (no recording exists)
+    or anything that is not one plain pinyin syllable."""
+    s = unicodedata.normalize("NFD", py.strip().lower())
+    tone = ""
+    for m, t in _TONE_MARK.items():
+        if m in s:
+            tone = t
+            s = s.replace(m, "")
+    s = s.replace("u\u0308", "v").replace("\u0308", "")
+    s = unicodedata.normalize("NFC", s).replace("ê", "e")
+    return s + tone if tone and re.fullmatch(r"[a-z]+", s) else ""
+
+
+def vie_file(syl: str) -> str:
+    """The recording's file name for one Vietnamese syllable."""
+    s = unicodedata.normalize("NFC", syl.strip().lower())
+    return f"{s}.mp3" if re.fullmatch(r"[a-zà-ỹđ]+", s) else ""
+
+
 def _audio_key(col: str, rom: str) -> str:
+    if col == "Mandarin":
+        n = pinyin_numbered(rom)
+        return f"c:{n}" if n and f"cmn-{n}.mp3" in CMN_FILES else ""
+    if col == "Vietnamese":
+        f = vie_file(rom)
+        return f"v:{f}" if f and f in VIE_FILES else ""
     if col == "Teochew" and re.fullmatch(r"[a-zê]+\d", rom):
         if CZ_SYLLABLES and re.search(r"[iu]a(ng|g)\d$", rom) and rom not in CZ_SYLLABLES:
             return ""
@@ -600,7 +645,7 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
                 a = a.lower()
             disp = ak.tones_to_chao(a, col)
             en = _ipa_en(col, a) if col not in SINO else ""
-            out.append(_reading(disp, en, ml))
+            out.append(_reading(disp, en, ml, _audio_key(col, a) if col == "Vietnamese" else ""))
         out = list({r["t"]: r for r in out}.values())
         if out:
             v[colidx[col]] = out

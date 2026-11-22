@@ -121,7 +121,8 @@ function rowHTML(col, e, extra = "") {
   const perReading = roms.some((r) => r.a);
   const items = main.map((r) => readingHTML(r, { audio: perReading ? rowAudio(col, e, r) : "" })).join("");
   let rowPlay = "";
-  if (col.audio?.startsWith("tts:")) rowPlay = ttsBtn(e.ch, col.audio.slice(4), { small: true, label: `Play ${col.label}` });
+  // a recording per reading beats the device voice reading the character
+  if (!perReading && col.audio?.startsWith("tts:")) rowPlay = ttsBtn(e.ch, col.audio.slice(4), { small: true, label: `Play ${col.label}` });
   const ipaLine = roms.length && ipas.length
     ? `<div class="ipa-line"><span class="lbl">IPA</span>${ipas.map((r) =>
         `<span>${esc(r.t)}${r.m ? '<span class="badge-ml">ML</span>' : ""}</span>`).join("")}</div>` : "";
@@ -231,7 +232,7 @@ function sinoRows(e) {
   const vi = g("Vietnamese");
   if (vi.length) {
     out.push(simpleRow("Vietnamese", "Tiếng Việt", "Hán-Việt", `<div class="readings">${vi.map((r) =>
-      readingHTML(r, { audio: ttsBtn(r.t, "vi-VN", { small: true, label: `Play ${r.t}` }) })).join("")}</div>`));
+      readingHTML(r, { audio: r.a ? urlBtn(A.keyUrl(r.a), { small: true, label: `Play ${r.t}` }) : ttsBtn(r.t, "vi-VN", { small: true, label: `Play ${r.t}` }) })).join("")}</div>`));
   }
   for (const id of ["Okinawan", "Zhuang"]) {
     const c = COL(id);
@@ -381,7 +382,7 @@ async function charView(ch) {
       </div>
       ${variant}
       <div class="hero-actions">
-        ${ttsBtn(ch, "zh-CN", { label: "Play Mandarin" }).replace('class="play"', 'class="play" style="width:38px;height:38px"')}
+        ${(man[0]?.a ? urlBtn(A.keyUrl(man[0].a), { label: `Play ${man[0].t}` }) : ttsBtn(ch, "zh-CN", { label: "Play Mandarin" })).replace('class="play"', 'class="play" style="width:38px;height:38px"')}
         <button class="btn ${isSaved ? "on" : ""}" id="save-btn">${ICON.star}<span>${isSaved ? "Saved" : "Save"}</span></button>
         <button class="btn" id="copy-btn">${ICON.copy}<span>Copy</span></button>
         ${navigator.share ? `<button class="btn" id="share-btn">${ICON.share}<span>Share</span></button>` : ""}
@@ -789,7 +790,7 @@ async function savedView() {
     <section class="section"><div class="section-head"><h2>About</h2></div>
     <div class="card pad note">
       <p style="margin-top:0"><b>漢字音庫</b> brings together the pronunciations of ${D.meta().chars.toLocaleString()} Chinese characters across ${langs.length} Sinitic varieties, ${Object.keys(D.cols().reduce((a, c) => (c.section === "local" ? (a[c.id] = 1, a) : a), {})).length} local dialect points, Middle and Old Chinese, and Japanese, Korean and Vietnamese.</p>
-      <p>Readings come from Unihan, Wiktionary, kaikki.org, MCPDict (漢字音典), Baxter–Sagart, ytenx and qieyun-data. Readings marked <span class="badge-ml">ML</span> are predicted by a model, not attested. Hokkien readings are Taiwanese and Teochew readings are Swatow (Shantou), from Wiktionary's place-tagged readings, with dialect surveys for characters it lacks. Teochew audio is from <a href="https://www.mogher.com" target="_blank" rel="noopener">mogher.com</a>, recorded by a Chaozhou-city speaker, so a few vowels differ from Swatow (Chaozhou -iêng / -uêng for Swatow -iang / -uang). Taiwanese Hokkien audio is ithuan.tw's <a href="https://ithuan.tw" target="_blank" rel="noopener">SuiSiann</a> voice. Both play one syllable at a time in citation tone: tone sandhi isn't applied. Other voices are your device's own.</p>
+      <p>Readings come from Unihan, Wiktionary, kaikki.org, MCPDict (漢字音典), Baxter–Sagart, ytenx and qieyun-data. Readings marked <span class="badge-ml">ML</span> are predicted by a model, not attested. Hokkien readings are Taiwanese and Teochew readings are Swatow (Shantou), from Wiktionary's place-tagged readings, with dialect surveys for characters it lacks. Teochew audio is from <a href="https://www.mogher.com" target="_blank" rel="noopener">mogher.com</a>, recorded by a Chaozhou-city speaker, so a few vowels differ from Swatow (Chaozhou -iêng / -uêng for Swatow -iang / -uang). Taiwanese Hokkien audio is ithuan.tw's <a href="https://ithuan.tw" target="_blank" rel="noopener">SuiSiann</a> voice. Both play one syllable at a time in citation tone: tone sandhi isn't applied. Mandarin syllables are recorded by Chen Wang (<a href="https://github.com/hugolpz/audio-cmn" target="_blank" rel="noopener">audio-cmn</a>, CC BY-SA). Vietnamese syllables are Wikimedia Commons recordings by Hanoi speakers (Lingua Libre, CC0; Voice of Vietnam clips, CC BY-SA), available for about one reading in five. Other voices are your device's own (<a href="https://github.com/zzz9269/hanzi-sound-library/blob/main/web/audio/CREDITS.md" target="_blank" rel="noopener">audio credits</a>).</p>
       <p style="margin-bottom:0">Data built ${esc(D.meta().built)} · <a href="https://github.com/zzz9269/hanzi-sound-library" target="_blank" rel="noopener">Source code and data credits</a></p>
     </div></section>
   </div>`;

@@ -138,5 +138,8 @@ export function keyUrl(key) {
   if (!key) return null;
   if (key.startsWith("m:")) return mogherUrl(key.slice(2));
   if (key.startsWith("h:")) return ithuanUrl(key.slice(2));
+  // recordings hosted with the app (see web/audio/CREDITS.md)
+  if (key.startsWith("c:")) return `audio/cmn/cmn-${key.slice(2)}.mp3`;
+  if (key.startsWith("v:")) return `audio/vie/${encodeURIComponent(key.slice(2))}`;
   return null;
 }
