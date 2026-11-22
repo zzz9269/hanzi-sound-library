@@ -13,7 +13,11 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener("install", (ev) => {
-  ev.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  // cache: "reload" skips the browser's HTTP cache (GitHub Pages sends
+  // max-age=600), so a new build never precaches the previous build's files
+  ev.waitUntil(caches.open(SHELL)
+    .then((c) => c.addAll(SHELL_FILES.map((u) => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (ev) => {
@@ -60,7 +64,7 @@ async function networkFirst(cacheName, req) {
 async function staleWhileRevalidate(cacheName, req) {
   const c = await caches.open(cacheName);
   const hit = await c.match(req, { ignoreSearch: true });
-  const fresh = fetch(req).then((res) => { if (res.ok) c.put(req, res.clone()); return res; });
+  const fresh = fetch(req, { cache: "no-cache" }).then((res) => { if (res.ok) c.put(req, res.clone()); return res; });
   if (hit) { fresh.catch(() => {}); return hit; }
   return fresh;
 }

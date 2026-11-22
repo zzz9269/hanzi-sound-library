@@ -890,7 +890,15 @@ async function main() {
   window.addEventListener("hashchange", route);
   route();
   if ("serviceWorker" in navigator && location.protocol === "https:") {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    // check for a new build on every open; when one takes over, reload once so
+    // the page runs the new code instead of the copy it started with
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (hadController && !reloaded) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+      .then((reg) => reg.update()).catch(() => {});
     navigator.serviceWorker.addEventListener("message", (ev) => {
       const m = ev.data || {};
       if (m.type !== "prefetch-progress") return;
