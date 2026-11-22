@@ -774,6 +774,13 @@ function submitQuery(q) {
 async function main() {
   applySettings();
   $("#search").addEventListener("submit", (ev) => { ev.preventDefault(); submitQuery($("#q").value); });
+  // "Look up" searches whatever is typed (and focuses the box when it's empty)
+  $$('a[data-tab="home"]').forEach((a) => a.addEventListener("click", (ev) => {
+    const q = $("#q").value.trim();
+    ev.preventDefault();
+    if (q) submitQuery(q);
+    else { location.hash = "#/"; $("#q").focus(); }
+  }));
   $("#q").addEventListener("input", () => { $("#q-clear").hidden = !$("#q").value; });
   $("#q-clear").addEventListener("click", () => { $("#q").value = ""; $("#q-clear").hidden = true; $("#q").focus(); });
   view.innerHTML = `<div class="loading"><span class="spinner"></span>Loading…</div>`;
