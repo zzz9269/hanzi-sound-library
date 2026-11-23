@@ -468,8 +468,8 @@ def chaozhou_syllables(data: dict) -> set:
 
 # Per-syllable recordings hosted with the app (web/audio/):
 #   cmn/  Mandarin, hugolpz/audio-cmn "syllabs v.2" (speaker Chen Wang, CC BY-SA)
-#   vie/  Vietnamese, Wikimedia Commons recordings by Hanoi speakers only
-#         (Lingua Libre "Penn Zero MSSJ", CC0; Vi-hanoi, CC BY-SA 3.0).
+#   vie/  Vietnamese, Lingua Libre recordings by a Hanoi speaker
+#         ("Penn Zero MSSJ", CC0, via Wikimedia Commons).
 #         Southern-speaker recordings are left out: the readings are Northern.
 # See web/audio/CREDITS.md. A syllable with no recording gets no key.
 AUDIO_DIR = Path(__file__).resolve().parent.parent / "web" / "audio"
