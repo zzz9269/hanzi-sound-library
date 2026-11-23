@@ -470,8 +470,13 @@ function bindLazyFolds(ch) {
     },
     ety: async () => {
       const parts = await W.etymology(ch);
+      let last = "";
       return parts.length
-        ? `<div class="wikt">${parts.map((x) => (x.title ? `<h4>${esc(x.title)}</h4>` : "") + x.html).join("")}<div class="wikt-src">From English Wiktionary · CC BY-SA 4.0 · <a href="${W.pageUrl(ch)}" target="_blank" rel="noopener">open the full page</a></div></div>`
+        ? `<div class="wikt">${parts.map((x) => {
+            const head = x.lang !== last ? `<h3 class="ety-lang"><a href="${W.pageUrl(ch, x.lang)}" target="_blank" rel="noopener">${esc(x.lang)}</a></h3>` : "";
+            last = x.lang;
+            return head + (x.title ? `<h4>${esc(x.title)}</h4>` : "") + x.html;
+          }).join("")}<div class="wikt-src">From English Wiktionary · CC BY-SA 4.0 · <a href="${W.pageUrl(ch)}" target="_blank" rel="noopener">open the full page</a></div></div>`
         : `<div class="loading">Wiktionary has no etymology notes for ${esc(ch)}.</div>`;
     },
     sources: async () => {
