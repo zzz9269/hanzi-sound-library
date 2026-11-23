@@ -98,6 +98,7 @@ self.addEventListener("fetch", (ev) => {
 // "Use offline": the page posts the list of data files; cache what's missing.
 self.addEventListener("message", (ev) => {
   const msg = ev.data || {};
+  if (msg.type === "clear-offline") { ev.waitUntil(caches.delete(DATA)); return; }
   if (msg.type !== "prefetch") return;
   ev.waitUntil((async () => {
     const c = await caches.open(DATA);

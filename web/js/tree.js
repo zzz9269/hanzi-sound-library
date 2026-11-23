@@ -301,6 +301,21 @@ export function bindTree(root, e) {
   const pos = (e.v?.[D.colIdx("Middle Chinese (position)")] || [])[0]?.t || "";
   const laws = soundLaws(pos, (e.v?.[D.colIdx("Mandarin")] || [])[0]?.t || "");
   const detail = root.querySelector("#tree-detail");
+  // fade the right edge while more of the tree is off-screen; hide the swipe
+  // hint when it all fits
+  const sc = root.querySelector(".tree-scroll"), hint = root.querySelector(".tree-hint");
+  if (sc) {
+    const update = () => {
+      if (!sc.clientWidth) return;                        // hidden (list view)
+      const can = sc.scrollWidth > sc.clientWidth + 4;
+      sc.classList.toggle("can-scroll", can);
+      sc.classList.toggle("at-end", sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 4);
+      if (hint) hint.hidden = !can;
+    };
+    sc.addEventListener("scroll", update, { passive: true });
+    if (window.ResizeObserver) new ResizeObserver(update).observe(sc);
+    update();
+  }
   root.querySelectorAll(".t-node").forEach((b) => b.addEventListener("click", () => {
     root.querySelectorAll(".t-node.sel").forEach((x) => x.classList.remove("sel"));
     b.classList.add("sel");

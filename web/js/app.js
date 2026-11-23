@@ -34,10 +34,23 @@ function applySettings() {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $("#toast");
   t.textContent = msg; t.classList.add("show");
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), ms);
+}
+function hideToast() { clearTimeout(toastTimer); $("#toast")?.classList.remove("show"); }
+
+/** Copy text; falls back to a hidden text box where the Clipboard API is blocked. */
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
 }
 
 const kangxi = (n) => (n >= 1 && n <= 214 ? String.fromCodePoint(0x2f00 + n - 1) : "");
@@ -65,10 +78,15 @@ function toggleSaved(ch) {
 }
 
 // ------------------------------------------------------------ play buttons --
+const VOICE_NAME = { "zh-CN": "Mandarin", "zh-TW": "Mandarin", "zh-HK": "Cantonese",
+  "ja-JP": "Japanese", "ko-KR": "Korean", "vi-VN": "Vietnamese" };
+const noVoiceMsg = (lang) => `No ${VOICE_NAME[lang] || lang} voice on this device. Add one in your system's language or speech settings.`;
+/** A device-voice button. Without a matching voice it stays clickable but
+ *  greyed, and a tap explains why nothing plays. */
 function ttsBtn(text, lang, { small = false, label = "Play" } = {}) {
   const ok = A.canSpeak(lang);
-  return `<button class="play${small ? " small" : ""}" data-tts="${lang}" data-text="${esc(text)}"
-    aria-label="${esc(label)}" ${ok ? "" : `disabled title="No ${lang} voice on this device"`}>${ICON.play}</button>`;
+  return `<button class="play${small ? " small" : ""}${ok ? "" : " novoice"}" data-tts="${lang}" data-text="${esc(text)}"
+    aria-label="${esc(label)}" ${ok ? "" : `aria-disabled="true" title="${esc(noVoiceMsg(lang))}"`}>${ICON.play}</button>`;
 }
 function urlBtn(urls, { small = false, label = "Play", gap = 0 } = {}) {
   const list = (Array.isArray(urls) ? urls : [urls]).filter(Boolean);
@@ -86,6 +104,10 @@ document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest(".play");
   if (!btn || btn.disabled) return;
   ev.preventDefault(); ev.stopPropagation();
+  if (btn.classList.contains("novoice")) {
+    if (A.canSpeak(btn.dataset.tts)) { btn.classList.remove("novoice"); btn.removeAttribute("aria-disabled"); btn.removeAttribute("title"); }
+    else { toast(noVoiceMsg(btn.dataset.tts), 4000); return; }
+  }
   if (btn.classList.contains("playing") || btn.classList.contains("busy")) { A.stop(); return; }
   // recordings fetched from another site (mogher.com, ithuan.tw) can be slow:
   // say whose server we're waiting on, so it doesn't look like the app froze
@@ -97,7 +119,7 @@ document.addEventListener("click", async (ev) => {
     if (btn.dataset.tts) await A.speak(btn.dataset.text, btn.dataset.tts, { btn, rate: +(btn.dataset.rate || 0.9) });
     else if (btn.dataset.urls) await A.playUrls(JSON.parse(btn.dataset.urls), btn, { gap: +(btn.dataset.gap || 0) });
   } catch {
-    toast(btn.dataset.tts ? "No voice for this language on your device"
+    toast(btn.dataset.tts ? `Your device's ${VOICE_NAME[btn.dataset.tts] || ""} voice didn't start. Try again, or check your speech settings.`
       : host ? `${host} didn't send the recording. Try again in a moment.`
       : "No recording available for this reading");
   } finally {
@@ -105,8 +127,8 @@ document.addEventListener("click", async (ev) => {
   }
 });
 document.addEventListener("voices-ready", () => {
-  $$("button.play[data-tts][disabled]").forEach((b) => {
-    if (A.canSpeak(b.dataset.tts)) { b.disabled = false; b.removeAttribute("title"); }
+  $$("button.play.novoice[data-tts]").forEach((b) => {
+    if (A.canSpeak(b.dataset.tts)) { b.classList.remove("novoice"); b.removeAttribute("aria-disabled"); b.removeAttribute("title"); }
   });
 });
 
@@ -121,7 +143,7 @@ function readingHTML(r, { audio = "" } = {}) {
     + (k ? `<span class="badge-k ${r.k}" title="${esc(k[1])}">${k[0]}</span>` : "")
     + (r.q ? `<span class="badge-q" title="Unverified spelling: from a survey spreadsheet that writes one letter for two vowels">?</span>` : "")
     + (r.m ? `<span class="badge-ml" title="Machine-predicted: inferred by a model, not attested in a source">ML</span>` : "")
-    + (r.e ? `<span class="e">${esc(r.e)}</span>` : "") + (r.rom ? `<span class="rom">${esc(r.rom)}</span>` : "") + audio + `</span>`;
+    + (r.e ? `<span class="e">${esc(r.e)}</span>` : "") + (r.tag ? `<span class="tag">${esc(r.tag)}</span>` : "") + (r.rom ? `<span class="rom">${esc(r.rom)}</span>` : "") + audio + `</span>`;
 }
 
 function rowAudio(col, e, r) {
@@ -215,6 +237,9 @@ function dueum(syl) {
   return String.fromCharCode(0xac00 + i * 588 + v * 28 + f);
 }
 
+// on'yomi strata: when (and from where) each was borrowed
+const JA_TYPE = { goon: "呉音 go-on", "kan'on": "漢音 kan-on", "tōon": "唐音 tō-on",
+  "kan'yōon": "慣用音 kan'yō-on", soon: "宋音 sō-on", on: "" };
 function sinoRows(e) {
   const out = [];
   const g = (id) => e.v?.[D.colIdx(id)] || [];
@@ -225,10 +250,30 @@ function sinoRows(e) {
       return readingHTML({ ...r, rom: kanaRomaji(r.t) }, { audio: ttsBtn(kana, "ja-JP", { small: true, label: `Play ${r.t}` }) });
     };
     const roRow = (rs) => `<div class="readings">${rs.map((r) => readingHTML(r)).join("")}</div>`;
-    const onK = ja.filter((r) => isKata(r.t)), kunK = ja.filter((r) => !isKata(r.t));
-    const onBody = onK.length ? `<div class="readings">${onK.map(chip).join("")}</div>` : on.length ? roRow(on) : "";
-    const kunBody = kunK.length ? `<div class="readings">${kunK.map(chip).join("")}</div>` : kun.length ? roRow(kun) : "";
-    if (onBody) out.push(simpleRow("Japanese on'yomi", "音読み", "Sino-Japanese · borrowed from Chinese", onBody));
+    let onK = ja.filter((r) => isKata(r.t)), kunK = ja.filter((r) => !isKata(r.t));
+    // Wiktionary's kanji categories say which on'yomi is go-on, kan-on…; a
+    // reading only Unihan lists (末 ベキ, ミャク) goes behind a fold
+    const jt = e.jt || {};
+    let onRare = [], kunRare = [];
+    if (jt.o) {
+      const typ = (r) => jt.o[r.t.replace(/[.\-]/g, "")];
+      const order = ["goon", "kan'on", "tōon", "kan'yōon", "soon", "on"];
+      onRare = onK.filter((r) => !typ(r));
+      onK = onK.filter(typ).map((r) => ({ ...r, tag: JA_TYPE[typ(r)] || "" }))
+        .sort((a, b) => order.indexOf(typ(a)) - order.indexOf(typ(b)));
+    }
+    if (jt.k) {
+      const have = new Set(kunK.map((r) => r.t.replace(/[.\-]/g, "")));
+      const att = new Set(jt.k);
+      kunRare = kunK.filter((r) => !att.has(r.t.replace(/[.\-]/g, "")));
+      kunK = [...kunK.filter((r) => att.has(r.t.replace(/[.\-]/g, ""))),
+              ...jt.k.filter((k) => !have.has(k)).map((t) => ({ t }))];
+    }
+    const rare = (rs) => rs.length ? `<details class="ja-rare"><summary>${rs.length} more listed only in Unihan</summary><div class="readings">${rs.map(chip).join("")}</div><div class="muted" style="font-size:12.5px">Wiktionary doesn't list ${rs.length > 1 ? "these" : "this"} for the character: often a rare, historical or name reading.</div></details>` : "";
+    const onBody = onK.length || onRare.length ? `<div class="readings">${onK.map(chip).join("")}</div>${rare(onRare)}` : on.length ? roRow(on) : "";
+    const kunBody = kunK.length || kunRare.length ? `<div class="readings">${kunK.map(chip).join("")}</div>${rare(kunRare)}` : kun.length ? roRow(kun) : "";
+    const joyo = jt.j ? " · 常用 jōyō kanji" : "";
+    if (onBody) out.push(simpleRow("Japanese on'yomi", "音読み", "Sino-Japanese · borrowed from Chinese" + joyo, onBody));
     if (kunBody) out.push(simpleRow("Japanese kun'yomi", "訓読み", "native Japanese word · not from Chinese", kunBody));
   }
   const ko = g("Korean (Hangul)");
@@ -356,6 +401,11 @@ function fold(id, ico, title, sub, body = "") {
 
 // ------------------------------------------------------------- char view ----
 async function charView(ch) {
+  document.title = `${ch} · 漢字音庫`;
+  if (!D.isHan(ch)) {
+    view.innerHTML = `<div class="empty"><span class="han">?</span>“${esc(ch)}” isn't a Chinese character. <a href="#/s/${enc(ch)}">Search for “${esc(ch)}” instead</a>.</div>`;
+    return;
+  }
   view.innerHTML = `<div class="hero fade-in"><div class="hero-glyph">${esc(ch)}</div><div class="hero-main"><div class="skeleton" style="height:26px;width:60%"></div><div class="skeleton" style="height:16px;width:85%;margin-top:12px"></div></div></div>`;
   const e = await D.entry(ch);
   if (!e || (!e.v && !e.i && !e.d)) {
@@ -379,7 +429,8 @@ async function charView(ch) {
   const hiddenIds = new Set(settings.hidden);
   const sin = SINITIC();
   const shownRows = sin.filter((c) => !hiddenIds.has(c.id)).map((c) => rowHTML(c, e)).filter(Boolean);
-  const hiddenRows = sin.filter((c) => hiddenIds.has(c.id)).map((c) => rowHTML(c, e)).filter(Boolean);
+  const hiddenCols = sin.filter((c) => hiddenIds.has(c.id) && rowHTML(c, e));
+  const hiddenRows = hiddenCols.map((c) => rowHTML(c, e));
   const sino = sinoRows(e), hist = histRows(e);
   const variant = e.from
     ? `<div class="variant-note">Readings that are only recorded under the traditional form <a href="#/c/${enc(e.from)}" class="han">${esc(e.from)}</a> are included.</div>`
@@ -388,7 +439,7 @@ async function charView(ch) {
   view.innerHTML = `
   <article class="fade-in">
     <div class="hero">
-      <div class="hero-glyph" lang="zh-Hant">${esc(ch)}</div>
+      <h1 class="hero-glyph" lang="zh-Hant">${esc(ch)}</h1>
       <div class="hero-main">
         <div class="hero-readings">
           ${man.slice(0, 3).map((r) => `<span class="r">${esc(r.t)}</span>`).join("")}
@@ -420,7 +471,7 @@ async function charView(ch) {
     <div id="rd-list" ${settings.view === "tree" ? "hidden" : ""}>
     ${shownRows.length ? `<section class="section"><div class="section-head"><h2>Spoken today</h2><span class="han">現代漢語方言</span><span class="spacer"></span><span class="muted" style="font-size:12.5px">${shownRows.length} varieties</span></div>
       <div class="card rows two">${shownRows.join("")}</div>
-      ${hiddenRows.length ? `<details class="fold card" style="margin-top:10px"><summary><span>${hiddenRows.length} more ${hiddenRows.length === 1 ? "variety" : "varieties"}</span><span class="chev">${ICON.chev}</span></summary><div class="fold-body rows two">${hiddenRows.join("")}</div></details>` : ""}
+      ${hiddenRows.length ? `<details class="fold card" style="margin-top:10px"><summary><span>Hidden in Settings: ${esc(hiddenCols.map((c) => c.label).join(", "))} · <u>show</u></span><span class="chev">${ICON.chev}</span></summary><div class="fold-body rows two">${hiddenRows.join("")}</div></details>` : ""}
     </section>` : ""}
 
     ${sino ? `<section class="section"><div class="section-head"><h2>Across East Asia</h2><span class="han">漢字文化圈</span></div><div class="card rows two">${sino}</div></section>` : ""}
@@ -444,7 +495,7 @@ async function charView(ch) {
     toast(on ? `Saved ${ch}` : `Removed ${ch}`);
   };
   $("#copy-btn").onclick = async () => {
-    try { await navigator.clipboard.writeText(ch); toast(`Copied ${ch}`); } catch { toast("Copy not allowed here"); }
+    toast(await copyText(ch) ? `Copied ${ch}` : "This browser blocked copying. Select the character and copy it yourself.");
   };
   if ($("#share-btn")) $("#share-btn").onclick = () =>
     navigator.share({ title: `${ch} · 漢字音庫`, text: `${ch} ${man[0]?.t || ""} — ${e.d || ""}`, url: location.href }).catch(() => {});
@@ -503,28 +554,41 @@ function bindLazyFolds(ch) {
 
 // ------------------------------------------------- phrase / ruby rendering --
 const MIN_LANGS = new Set(["Hokkien", "Teochew"]);
-/** First reading for a column at each position: [{ch, r}] (r null when none).
- *  With `literary`, Hokkien/Teochew take the literary (文讀) reading where
- *  one is marked, as classical poems are recited. */
-function perChar(list, ents, colId, { literary = false } = {}) {
+// Word-level readings stored on each word's first character, per variety
+// (Mandarin from CC-CEDICT/pypinyin; Cantonese and Taiwanese Hokkien from
+// Wiktionary): 銀行 ngan4 hong4, 行長 hong4 zoeng2, 長大 zoeng2 daai6.
+const WORD_KEY = { Mandarin: "x", Cantonese: "xy", Hokkien: "xh" };
+const nfc = (t) => (t || "").normalize("NFC").toLowerCase();
+
+/** First reading for a column at each position: [{ch, r, han, pos, poly, how}].
+ *  A word reading wins over the character's first reading; a reading the
+ *  user picked (`overrides`, keyed by pos) wins over both. `poly` marks a
+ *  character whose reading was a guess among several. With `literary`,
+ *  Hokkien/Teochew take the literary (文讀) reading where one is marked, as
+ *  classical poems are recited (and colloquial word readings are skipped). */
+function perChar(list, ents, colId, { literary = false, overrides = null, base = "" } = {}) {
   const k = D.colIdx(colId);
-  const ctx = colId === "Mandarin" ? wordReadings(list, ents) : [];
   const lit = literary && MIN_LANGS.has(colId);
+  const ctx = WORD_KEY[colId] && !lit ? wordReadings(list, ents, WORD_KEY[colId]) : [];
   return list.map((ch, i) => {
     const e = ents[i];
     const rs = e?.v?.[k] || [];
     let r = e ? ((lit && rs.find((x) => x.k === "l")) || rs[0] || e.i?.[k]?.[0] || null) : null;
-    if (ctx[i]) r = (e?.v?.[k] || []).find((x) => x.t === ctx[i]) || { t: ctx[i] };
-    return { ch, r, han: D.isHan(ch) };
+    let how = "";
+    if (ctx[i]) { r = rs.find((x) => nfc(x.t) === nfc(ctx[i])) || { t: ctx[i] }; how = "word"; }
+    const pos = `${base}${i}`;
+    const o = overrides?.get(pos);
+    if (o) { r = rs.find((x) => x.t === o) || { t: o }; how = "picked"; }
+    return { ch, r, han: D.isHan(ch), pos, poly: !how && rs.length > 1, how, known: !!e };
   });
 }
 
-/** Mandarin readings that depend on the word (長城 cháng chéng, 銀行 yín
- *  háng): longest match over the words stored on each character's entry. */
-function wordReadings(list, ents) {
+/** Readings that depend on the word (長城 cháng chéng, 銀行 yín háng):
+ *  longest match over the words stored on each character's entry. */
+function wordReadings(list, ents, key = "x") {
   const out = new Array(list.length).fill(null);
   for (let i = 0; i < list.length;) {
-    const x = ents[i]?.x;
+    const x = ents[i]?.[key];
     let py = null;
     if (x) {
       for (let L = Math.min(8, list.length - i); L >= 2 && !py; L--) {
@@ -532,17 +596,20 @@ function wordReadings(list, ents) {
         if (hit) py = hit.split(" ");
       }
     }
-    if (py) { py.forEach((p, j) => { out[i + j] = p; }); i += py.length; } else i++;
+    if (py && py.length) { py.forEach((p, j) => { out[i + j] = p; }); i += py.length; } else i++;
   }
   return out;
 }
 
 const CLAUSE_END = /[，,、；;：:。！？!?]/;
-function rubyCell({ ch, r, han }) {
+function rubyCell({ ch, r, han, pos, poly, known }) {
   if (!han) return `<span class="ruby punct"><span class="rt">&nbsp;</span><span class="rb">${esc(ch)}</span></span>`;
-  const rt = r ? `<span class="rt${r.m ? " ml" : ""}">${esc(r.t)}</span>` : `<span class="rt none">·</span>`;
+  const rt = r ? `<span class="rt${r.m ? " ml" : ""}${poly ? " poly" : ""}">${esc(r.t)}</span>`
+    : `<span class="rt none">—</span>`;
   const en = r?.e ? `<span class="en">≈ ${esc(r.e)}</span>` : "";
-  return `<button class="ruby" data-ch="${esc(ch)}">${rt}<span class="rb">${esc(ch)}</span>${en}</button>`;
+  const tip = !r ? (known ? "No reading recorded in this variety" : "This character isn't in the dictionary yet")
+    : poly ? "This character has other readings here: tap to choose" : "";
+  return `<button class="ruby" data-ch="${esc(ch)}"${pos != null ? ` data-pos="${esc(pos)}"` : ""}${tip ? ` title="${esc(tip)}"` : ""}>${rt}<span class="rb">${esc(ch)}</span>${en}</button>`;
 }
 /** Characters with readings above. Punctuation sticks to the character
  *  before it so a line never starts with a comma; with `clauses`, each
@@ -598,7 +665,7 @@ async function phraseView(text) {
   }).join("");
   view.innerHTML = `<article class="fade-in">
     <div class="phrase-hero">${list.map((ch) => D.isHan(ch) ? `<a href="#/c/${enc(ch)}" class="han">${esc(ch)}</a>` : `<span class="han" style="font-size:40px;color:var(--muted)">${esc(ch)}</span>`).join("")}</div>
-    <p class="page-sub">Tap any character for its full page. Readings are each character's main reading; context-dependent readings may differ.</p>
+    <p class="page-sub">Tap any character for its full page. Mandarin, Cantonese and Hokkien use the word's own reading where the dictionary has the word; <span class="poly-key">dotted</span> readings are a guess among several.</p>
     <div class="card">${blocks || `<div class="empty">No readings found.</div>`}</div>
     ${list.length > 6 ? `<p style="margin-top:14px"><a class="btn" href="#/read" id="open-reader">${ICON.book}<span>Open in the reader</span></a></p>` : ""}
     ${footer()}
@@ -619,8 +686,12 @@ async function searchView(q) {
     const p = (e.v?.[D.colIdx("Mandarin")] || [])[0]?.t || "";
     return `<a class="res" href="#/c/${enc(ch)}"><span class="g han">${esc(ch)}</span><span class="p">${esc(p)}</span><span class="d">${esc(e.d || "")}</span>${sub ? `<span class="c">${esc(sub)}</span>` : ""}</a>`;
   };
-  const rd = byReading.map((x) => card(x.ch, x.col ? `${x.col.label}${x.col.scheme && x.col.section !== "local" ? " · " + x.col.scheme : ""}` : "")).join("");
-  const en = byEnglish.map((c) => card(c)).join("");
+  // first 24 of each list, the rest behind "Show all"
+  const paged = (cards, id) => cards.length <= 24 ? cards.join("")
+    : cards.slice(0, 24).join("") + `<div class="more-wrap" id="${id}" hidden>${cards.slice(24).join("")}</div>`
+      + `<button class="btn more-btn" data-more="${id}">Show all ${cards.length}</button>`;
+  const rd = paged(byReading.map((x) => card(x.ch, x.col ? `${x.col.label}${x.col.scheme && x.col.section !== "local" ? " · " + x.col.scheme : ""}` : "")).filter(Boolean), "more-rd");
+  const en = paged(byEnglish.map((c) => card(c)).filter(Boolean), "more-en");
   document.title = `${q} · 漢字音庫`;
   view.innerHTML = `<div class="fade-in">
     <h1 class="page-title">“${esc(q)}”</h1>
@@ -629,10 +700,14 @@ async function searchView(q) {
     ${!rd && !en ? `<div class="empty"><span class="han">無</span>Nothing found. Try a single English word (“moon”), a reading (“tian”, “jat1”, “then”) or paste Chinese characters.</div>` : ""}
     ${footer()}
   </div>`;
+  $$("[data-more]").forEach((b) => b.addEventListener("click", () => {
+    const box = $("#" + b.dataset.more);
+    box.hidden = false; box.style.display = "contents"; b.remove();
+  }));
 }
 
 // ------------------------------------------------------------ bottom sheet --
-async function peek(ch) {
+async function peek(ch, pos = null) {
   const sheet = $("#sheet"), bd = $("#sheet-backdrop");
   sheet.innerHTML = `<div class="grab"></div><div class="loading"><span class="spinner"></span></div>`;
   sheet.hidden = bd.hidden = false;
@@ -645,10 +720,23 @@ async function peek(ch) {
     const all = (e.v?.[D.colIdx(id)] || []).slice(0, 3).map((x) => x.t).join(" · ") || r.t;
     return `<div><b>${esc(langName(id))}</b><span class="t">${esc(all)}</span></div>`;
   }).join("");
+  // on the Read page: let the reader pick which reading this character has here
+  let choose = "";
+  if (pos != null && readerCtx) {
+    const rs = e.v?.[D.colIdx(readerCtx.lang)] || [];
+    const curT = readerCtx.out.querySelector(`button.ruby[data-pos="${CSS.escape(pos)}"] .rt`)?.textContent;
+    if (rs.length > 1) {
+      choose = `<div class="peek-choose"><div class="eyebrow">Reading here in ${esc(langName(readerCtx.lang))}</div><div class="chips">${rs.map((r) =>
+        `<button class="chip-btn${r.t === curT ? " on" : ""}" data-pick="${esc(r.t)}">${esc(r.t)}${r.k === "l" ? " 文" : r.k === "v" ? " 白" : ""}</button>`).join("")}</div></div>`;
+    }
+  }
   sheet.innerHTML = `<div class="grab"></div>
     <div class="peek-head"><span class="g">${esc(ch)}</span><div><div style="font-size:15px;color:var(--ink-2)">${esc(e.d || "")}</div>
     <div class="row-flex" style="margin-top:10px">${ttsBtn(ch, "zh-CN", { label: "Play Mandarin" })}<a class="btn primary" href="#/c/${enc(ch)}">Open full page</a></div></div></div>
-    <div class="peek-list">${rows}</div>`;
+    ${choose}<div class="peek-list">${rows}</div>`;
+  sheet.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+    pickReading(pos, b.dataset.pick); closeSheet();
+  }));
 }
 function closeSheet() { $("#sheet").hidden = true; $("#sheet-backdrop").hidden = true; }
 $("#sheet-backdrop").addEventListener("click", closeSheet);
@@ -657,10 +745,12 @@ document.addEventListener("click", (ev) => {
   const r = ev.target.closest("button.ruby[data-ch]");
   if (!r) return;
   if (r.closest(".recite, .recite-chars") && !r.classList.contains("peek")) { r.classList.add("peek"); return; }
-  peek(r.dataset.ch);
+  peek(r.dataset.ch, readerCtx?.out?.contains(r) ? r.dataset.pos : null);
 });
 
 // ------------------------------------------------------------------ reader --
+// The reading on screen, so a tapped character can be given another reading.
+let readerCtx = null;     // { lang, overrides: Map, E, literary, out }
 const SENT_RE = /[^。！？；!?;\n]+[。！？；!?;]?/g;
 function langSelect(id, value) {
   return `<select class="select" id="${id}">${READ_LANGS.filter((l) => COL(l)).map((l) =>
@@ -673,21 +763,44 @@ async function renderReading(text, lang, out, { big = false, literary = false } 
   out.innerHTML = `<div class="loading"><span class="spinner"></span>Reading ${all.length} characters…</div>`;
   const ents = await D.entries(all);
   const E = Object.fromEntries(all.map((c, i) => [c, ents[i]]));
-  const html = sentences.map((s) => {
+  const ctx = readerCtx = { lang, overrides: new Map(), E, literary, out };
+  const sentenceHTML = (s, si) => {
     const list = D.chars(s);
-    const cells = perChar(list, list.map((c) => E[c] || null), lang, { literary });
+    const cells = perChar(list, list.map((c) => E[c] || null), lang, { literary, overrides: ctx.overrides, base: `${si}:` });
     return `<div class="sentence"><div class="${big ? "big-ruby" : ""}">${rubyLine(cells, { clauses: big })}</div><div>${lineAudio(lang, cells, s)}</div></div>`;
-  }).join("");
+  };
   const note = !MIN_LANGS.has(lang) ? ""
     : `<div class="sentence min">${literary
         ? MIN_NOTE.replace("</p>", " Literary (文讀) readings are used where known, as classical poems are recited.</p>")
         : MIN_NOTE}</div>`;
-  out.innerHTML = html ? note + html : `<div class="empty">Paste or type some Chinese text above.</div>`;
+  if (!sentences.length) { out.innerHTML = `<div class="empty">Paste or type some Chinese text above.</div>`; return; }
+  // long texts: draw the first part at once, the rest in batches, so a pasted
+  // chapter doesn't freeze the page
+  const BATCH = 60;
+  out.innerHTML = note + sentences.slice(0, BATCH).map(sentenceHTML).join("");
+  for (let i = BATCH; i < sentences.length; i += BATCH) {
+    await new Promise((r) => setTimeout(r, 0));
+    if (readerCtx !== ctx) return;                    // a newer reading replaced this one
+    out.insertAdjacentHTML("beforeend", sentences.slice(i, i + BATCH).map((s, j) => sentenceHTML(s, i + j)).join(""));
+  }
 }
 
-async function readView() {
+/** Give one character on the Read page another reading (from the peek sheet). */
+function pickReading(pos, t) {
+  const ctx = readerCtx;
+  if (!ctx) return;
+  ctx.overrides.set(pos, t);
+  const btn = ctx.out.querySelector(`button.ruby[data-pos="${CSS.escape(pos)}"]`);
+  if (!btn) return;
+  const e = ctx.E[btn.dataset.ch];
+  const rs = e?.v?.[D.colIdx(ctx.lang)] || [];
+  const r = rs.find((x) => x.t === t) || { t };
+  btn.outerHTML = rubyCell({ ch: btn.dataset.ch, r, han: true, pos, poly: false, known: !!e });
+}
+
+async function readView(fromUrl = "") {
   document.title = "Read · 漢字音庫";
-  const draft = D.store.get("readDraft", "");
+  const draft = fromUrl || D.store.get("readDraft", "");
   const samples = await D.passages().catch(() => []);
   view.innerHTML = `<div class="fade-in">
     <h1 class="page-title">Read</h1>
@@ -705,6 +818,9 @@ async function readView() {
   const ta = $("#rd-text"), sel = $("#rd-lang"), out = $("#rd-out");
   const go = () => {
     D.store.set("readDraft", ta.value);
+    // keep the text in the address too, so a reload or a shared link reopens it
+    const t = ta.value.trim();
+    history.replaceState(null, "", t && t.length <= 1500 ? `#/read/${enc(t)}` : "#/read");
     settings.readLang = sel.value; saveSettings();
     renderReading(ta.value || "今天天氣很好，我想去公園散步。你要不要一起來？", sel.value, out);
   };
@@ -719,6 +835,13 @@ async function readView() {
 }
 
 // ------------------------------------------------------------------- poems --
+// The poem source marks taboo-avoided characters (避諱) restored by the
+// editors in brackets: [玄]宗. Show the character, marked, without brackets.
+const TABOO_TIP = "Restored character: the source edition avoided it (避諱, a name taboo) and the editors put it back";
+const tabooHTML = (t) => esc(t).replace(/\[([^\]]{1,4})\]/g, `<span class="taboo" title="${TABOO_TIP}">$1</span>`);
+const unbracket = (t) => (t || "").replace(/\[([^\]]{1,4})\]/g, "$1");
+const savedPoems = () => D.store.get("savedPoems", []);
+
 const ANTH_ICON = { "唐詩三百首": "唐", "宋詞三百首": "宋", "詩經": "詩", "蒙學": "蒙" };
 async function poemsView(anth) {
   document.title = "Poems · 漢字音庫";
@@ -730,23 +853,39 @@ async function poemsView(anth) {
     <h1 class="page-title">Poems</h1>
     <p class="page-sub">Classical poetry to read aloud in any variety: the 300 Tang poems, 300 Song lyrics, the Book of Songs and the classic primers.</p>
     <div class="toolbar"><div class="seg" id="anth">${anths.map((a) => `<button data-a="${esc(a)}" class="${a === cur ? "on" : ""}"><span class="han">${esc(a)}</span></button>`).join("")}</div>
-    <input class="input" id="poem-q" placeholder="Search title or author: 李白, 靜夜思…" style="max-width:320px"></div>
+    <input class="input" id="poem-q" placeholder="Search title, author or a line: 李白, 静夜思…" style="max-width:320px" aria-label="Search poems">
+    <select class="select" id="poem-author" style="max-width:220px" aria-label="Filter by author"></select>
+    <select class="select" id="poem-sort" style="max-width:180px" aria-label="Sort poems"><option value="">Book order</option><option value="author">By author</option><option value="title">By title</option></select></div>
     <div class="card poem-list" id="plist" style="margin-top:14px"></div>
     ${footer()}
   </div>`;
-  const list = $("#plist"), q = $("#poem-q");
+  const list = $("#plist"), q = $("#poem-q"), au = $("#poem-author"), so = $("#poem-sort");
   let current = cur;
+  const fillAuthors = () => {
+    const n = {};
+    poems.filter((p) => p.anthology === current).forEach((p) => { const a = unbracket(p.author); n[a] = (n[a] || 0) + 1; });
+    const names = Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b, "zh-Hant"));
+    au.innerHTML = `<option value="">All authors (${names.length})</option>` + names.map((a) => `<option value="${esc(a)}">${esc(a)} · ${n[a]}</option>`).join("");
+  };
   const draw = () => {
-    const s = q.value.trim();
-    const pool = poems.filter((p) => p.anthology === current && (!s || p.title.includes(s) || p.author.includes(s)));
-    list.innerHTML = pool.length ? pool.slice(0, 400).map((p) => `<a class="poem-item" href="#/poem/${p.id}"><b>${esc(p.title)}</b><span>${esc(p.author)}</span><small>${esc(p.lines[0] || "")}</small></a>`).join("")
+    const raw = q.value.trim();
+    // simplified input finds traditional titles (静夜思 → 靜夜思)
+    const keys = [...new Set([raw, D.chars(raw).map(D.toTrad).join("")])].filter(Boolean);
+    const hit = (t) => keys.some((k) => unbracket(t).includes(k));
+    let pool = poems.filter((p) => p.anthology === current && (!au.value || unbracket(p.author) === au.value)
+      && (!keys.length || hit(p.title) || hit(p.author) || p.lines.some(hit)));
+    if (so.value) pool = [...pool].sort((a, b) => unbracket(a[so.value]).localeCompare(unbracket(b[so.value]), "zh-Hant"));
+    list.innerHTML = pool.length ? pool.slice(0, 400).map((p) => `<a class="poem-item" href="#/poem/${p.id}"><b>${tabooHTML(p.title)}</b><span>${tabooHTML(p.author)}</span><small>${tabooHTML(p.lines[0] || "")}</small></a>`).join("")
       : `<div class="empty">No poems match.</div>`;
   };
+  fillAuthors();
+  au.addEventListener("change", draw);
+  so.addEventListener("change", draw);
   $("#anth").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-a]"); if (!b) return;
     current = b.dataset.a; D.store.set("anth", current);
     $$("#anth button").forEach((x) => x.classList.toggle("on", x === b));
-    draw();
+    fillAuthors(); draw();
   });
   q.addEventListener("input", draw);
   draw();
@@ -756,20 +895,31 @@ async function poemView(id) {
   const poems = await D.poems();
   const p = poems.find((x) => x.id === id);
   if (!p) { view.innerHTML = `<div class="empty">Poem not found.</div>`; return; }
-  document.title = `${p.title} · 漢字音庫`;
+  document.title = `${unbracket(p.title)} · 漢字音庫`;
+  const isSaved = savedPoems().includes(p.id);
+  const hasTaboo = /\[[^\]]{1,4}\]/.test([p.title, p.author, ...p.lines].join(""));
   view.innerHTML = `<article class="fade-in">
-    <a class="btn ghost" href="#/poems" style="margin-bottom:6px">← All poems</a>
-    <div class="poem-head"><h1>${esc(p.title)}</h1><p class="han">${esc(p.author)} · ${esc(p.anthology)}</p></div>
+    <div class="row-flex" style="margin-bottom:6px"><a class="btn ghost" href="#/poems">← All poems</a><span class="spacer"></span>
+      <button class="btn ${isSaved ? "on" : ""}" id="save-poem">${ICON.star}<span>${isSaved ? "Saved" : "Save"}</span></button></div>
+    <div class="poem-head"><h1>${tabooHTML(p.title)}</h1><p class="han">${tabooHTML(p.author)} · ${esc(p.anthology)}</p></div>
     <div class="toolbar" style="justify-content:center">
       <div style="min-width:200px">${langSelect("pm-lang", settings.readLang)}</div>
       <div class="seg" id="recite"><button data-r="" class="on">Read</button><button data-r="recite">Hide readings</button><button data-r="recite-chars">Hide characters</button></div>
     </div>
     <div class="card" style="margin-top:16px" id="pm-out"></div>
     ${p.note ? `<p class="note" style="margin-top:14px">${esc(p.note)}</p>` : ""}
+    ${hasTaboo ? `<p class="note muted" style="margin-top:10px"><span class="taboo">Underlined</span> characters were avoided in the source edition (避諱, a name taboo) and restored by its editors.</p>` : ""}
     ${footer()}
   </article>`;
   const out = $("#pm-out"), sel = $("#pm-lang");
-  const go = () => { settings.readLang = sel.value; saveSettings(); renderReading(p.lines.join("\n"), sel.value, out, { big: true, literary: true }); };
+  const go = () => { settings.readLang = sel.value; saveSettings(); renderReading(p.lines.map(unbracket).join("\n"), sel.value, out, { big: true, literary: true }); };
+  $("#save-poem").onclick = (ev) => {
+    const list = savedPoems(), on = !list.includes(p.id);
+    D.store.set("savedPoems", on ? [p.id, ...list] : list.filter((x) => x !== p.id));
+    ev.currentTarget.classList.toggle("on", on);
+    ev.currentTarget.querySelector("span").textContent = on ? "Saved" : "Save";
+    toast(on ? `Saved ${unbracket(p.title)}` : `Removed ${unbracket(p.title)}`);
+  };
   sel.addEventListener("change", go);
   $("#recite").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-r]"); if (!b) return;
@@ -784,7 +934,9 @@ async function poemView(id) {
 // ----------------------------------------------------------- saved/settings --
 async function savedView() {
   document.title = "Saved · 漢字音庫";
-  const s = saved(), r = recent();
+  const s = saved(), r = recent(), sp = savedPoems();
+  const allPoems = sp.length ? await D.poems().catch(() => []) : [];
+  const poemById = Object.fromEntries(allPoems.map((x) => [x.id, x]));
   const chip = (c) => `<a class="char-chip" href="#/c/${enc(c)}">${esc(c)}</a>`;
   const langs = SINITIC();
   const hidden = new Set(settings.hidden);
@@ -792,21 +944,29 @@ async function savedView() {
     <h1 class="page-title">Saved</h1>
     <div class="card pad"><div class="eyebrow" style="margin-bottom:10px">Saved characters</div>
       ${s.length ? `<div class="chips">${s.map(chip).join("")}</div>` : `<p class="muted" style="margin:0">Tap ★ Save on any character to keep it here.</p>`}</div>
+    <div class="card pad" style="margin-top:14px"><div class="eyebrow" style="margin-bottom:10px">Saved poems</div>
+      ${sp.length ? `<div class="poem-list">${sp.map((id) => poemById[id]).filter(Boolean).map((x) => `<a class="poem-item" href="#/poem/${x.id}"><b>${tabooHTML(x.title)}</b><span>${tabooHTML(x.author)}</span></a>`).join("")}</div>`
+        : `<p class="muted" style="margin:0">Tap ★ Save on any poem to keep it here.</p>`}</div>
     <div class="card pad" style="margin-top:14px"><div class="eyebrow" style="margin-bottom:10px">Recently viewed</div>
       ${r.length ? `<div class="chips">${r.map(chip).join("")}</div>` : `<p class="muted" style="margin:0">Characters you look up appear here.</p>`}</div>
+    <div class="row-flex" style="margin-top:12px;gap:8px">
+      <button class="btn" id="export-btn">Export saved list</button>
+      <label class="btn" style="cursor:pointer">Import…<input type="file" id="import-file" accept="application/json,.json" hidden></label>
+    </div>
 
     <section class="section"><div class="section-head"><h2>Settings</h2></div>
     <div class="card settings">
       <div class="setting"><div class="txt"><b>Appearance</b><span>Follow the system, or pick one</span></div>
         <div class="seg" id="theme">${["auto", "light", "dark"].map((t) => `<button data-t="${t}" class="${settings.theme === t ? "on" : ""}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></div>
-      <div class="setting"><div class="txt"><b>Show IPA</b><span>Phonetic transcription under each romanised reading</span></div>
-        <label class="switch"><input type="checkbox" id="set-ipa" ${settings.ipa ? "checked" : ""}><span></span></label></div>
-      <div class="setting"><div class="txt"><b>Show ≈ English hints</b><span>A rough English sounds-like for each reading</span></div>
-        <label class="switch"><input type="checkbox" id="set-en" ${settings.en ? "checked" : ""}><span></span></label></div>
+      <label class="setting" for="set-ipa"><span class="txt"><b>Show IPA</b><span>Phonetic transcription under each romanised reading</span></span>
+        <span class="switch"><input type="checkbox" role="switch" id="set-ipa" ${settings.ipa ? "checked" : ""}><span></span></span></label>
+      <label class="setting" for="set-en"><span class="txt"><b>Show ≈ English hints</b><span>A rough English sounds-like for each reading</span></span>
+        <span class="switch"><input type="checkbox" role="switch" id="set-en" ${settings.en ? "checked" : ""}><span></span></span></label>
       <div class="setting" style="display:block"><div class="txt"><b>Varieties shown first</b><span>Tap to hide the ones you don't need; hidden ones stay one tap away.</span></div></div>
-      <div class="lang-toggles" id="langs">${langs.map((c) => `<button data-id="${esc(c.id)}" class="${hidden.has(c.id) ? "" : "on"}">${esc(c.label)} <span class="han">${esc(c.native)}</span></button>`).join("")}</div>
+      <div class="lang-toggles" id="langs">${langs.map((c) => `<button data-id="${esc(c.id)}" class="${hidden.has(c.id) ? "" : "on"}" aria-pressed="${!hidden.has(c.id)}">${esc(c.label)} <span class="han">${esc(c.native)}</span></button>`).join("")}</div>
       <div class="setting"><div class="txt"><b>Use offline</b><span id="off-txt">Save every reading on this device (about ${Math.round((D.meta().offlineBytes || 0) / 1e6)} MB) so lookups work with no connection. Audio and Wiktionary still need the internet.</span></div>
-        <button class="btn" id="off-btn" ${navigator.serviceWorker?.controller ? "" : "disabled"}>Download</button></div>
+        <span class="row-flex" style="gap:6px;flex:none"><button class="btn" id="off-btn" ${navigator.serviceWorker?.controller ? "" : "disabled"}>Download</button>
+        <button class="btn ghost" id="off-rm" hidden>Remove</button></span></div>
     </div></section>
 
     <section class="section"><div class="section-head"><h2>About</h2></div>
@@ -823,12 +983,37 @@ async function savedView() {
   });
   const offBtn = $("#off-btn");
   if (!navigator.serviceWorker?.controller) offBtn.title = "Available in the installed app (or after one reload)";
-  if (D.store.get("offlineV", "") === D.meta().v) { offBtn.textContent = "Downloaded ✓"; }
+  const offV = D.store.get("offlineV", "");
+  const offRm = $("#off-rm");
+  if (offV === D.meta().v) { offBtn.textContent = "Downloaded ✓"; offRm.hidden = false; }
+  else if (offV) { offBtn.textContent = "Update"; offBtn.title = "The dictionary has changed since you downloaded it"; offRm.hidden = false; }
+  offRm.onclick = () => {
+    navigator.serviceWorker?.controller?.postMessage({ type: "clear-offline" });
+    D.store.set("offlineV", "");
+    offBtn.textContent = "Download"; offRm.hidden = true;
+    toast("Offline data removed");
+  };
   offBtn.onclick = () => {
     const sw = navigator.serviceWorker?.controller;
     if (!sw) return;
     offBtn.disabled = true; offBtn.textContent = "Starting…";
     sw.postMessage({ type: "prefetch", urls: D.offlineUrls() });
+  };
+  $("#export-btn").onclick = () => {
+    const blob = new Blob([JSON.stringify({ app: "hanzi-sound-library", saved: saved(), savedPoems: savedPoems(), recent: recent() }, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "hanzi-saved.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $("#import-file").onchange = async (ev) => {
+    const f = ev.target.files?.[0]; if (!f) return;
+    try {
+      const j = JSON.parse(await f.text());
+      const merge = (key, list) => Array.isArray(list) && D.store.set(key, [...new Set([...D.store.get(key, []), ...list.filter((x) => typeof x === "string")])]);
+      merge("saved", j.saved); merge("savedPoems", j.savedPoems);
+      toast("Imported"); savedView();
+    } catch { toast("That file isn't a saved-list export"); }
   };
   $("#set-ipa").onchange = (ev) => { settings.ipa = ev.target.checked; saveSettings(); };
   $("#set-en").onchange = (ev) => { settings.en = ev.target.checked; saveSettings(); };
@@ -838,7 +1023,7 @@ async function savedView() {
     const h = new Set(settings.hidden);
     if (h.has(id)) h.delete(id); else h.add(id);
     settings.hidden = [...h]; saveSettings();
-    b.classList.toggle("on", !h.has(id));
+    b.classList.toggle("on", !h.has(id)); b.setAttribute("aria-pressed", !h.has(id));
   });
 }
 
@@ -873,7 +1058,8 @@ function homeView() {
         <a class="tile" href="#/saved"><span class="han">藏</span><b>Saved</b><span>Your characters and settings</span></a>
       </div>
     </div>
-    ${r.length ? `<section class="section"><div class="section-head"><h2>Recently viewed</h2></div><div class="chips">${r.map((c) => `<a class="char-chip" href="#/c/${enc(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
+    ${r.length ? `<section class="section"><div class="section-head"><h2>Recently viewed</h2></div><div class="chips">${r.map((c) => `<a class="char-chip" href="#/c/${enc(c)}">${esc(c)}</a>`).join("")}</div></section>`
+      : `<section class="section"><div class="section-head"><h2>Most common characters</h2><span class="muted" style="font-size:12.5px">a place to start</span></div><div class="chips">${D.chars(common).slice(0, 24).map((c) => `<a class="char-chip" href="#/c/${enc(c)}">${esc(c)}</a>`).join("")}</div></section>`}
     ${footer()}
   </div>`;
   D.entry(daily).then((e) => {
@@ -892,8 +1078,13 @@ function footer() {
 function setTab(tab) {
   $$("[data-tab]").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
 }
+function notFound(raw) {
+  document.title = "Not found · 漢字音庫";
+  view.innerHTML = `<div class="empty"><span class="han">迷</span>There's no page at “${esc(raw)}”.<br><a class="btn" style="margin-top:14px" href="#/">Go to the home page</a></div>`;
+}
 async function route() {
-  A.stop(); closeSheet();
+  A.stop(); closeSheet(); hideToast();
+  if (!location.hash.startsWith("#/read")) readerCtx = null;
   const raw = location.hash.replace(/^#/, "") || "/";
   const [, kind = "", ...rest] = raw.split("/");
   const arg = decodeURIComponent(rest.join("/"));
@@ -901,12 +1092,14 @@ async function route() {
   try {
     if (kind === "c" && arg) { setTab("home"); qbox.value = arg; await charView(D.chars(arg)[0]); }
     else if (kind === "p" && arg) { setTab("home"); qbox.value = arg; await phraseView(arg); }
+    else if (kind === "s" && arg && D.chars(arg).some(D.isHan)) { location.replace(queryHash(arg)); return; }
     else if (kind === "s" && arg) { setTab("home"); qbox.value = arg; await searchView(arg); }
-    else if (kind === "read") { setTab("read"); qbox.value = ""; await readView(); }
+    else if (kind === "read") { setTab("read"); qbox.value = ""; await readView(arg); }
     else if (kind === "poems") { setTab("poems"); qbox.value = ""; await poemsView(arg); }
     else if (kind === "poem" && arg) { setTab("poems"); qbox.value = ""; await poemView(arg); }
     else if (kind === "saved") { setTab("saved"); qbox.value = ""; await savedView(); }
-    else { setTab("home"); qbox.value = ""; homeView(); }
+    else if (!kind) { setTab("home"); qbox.value = ""; homeView(); }
+    else { setTab(""); qbox.value = ""; notFound(raw); }
   } catch (err) {
     console.error(err);
     view.innerHTML = `<div class="empty"><span class="han">斷</span>Something went wrong loading this page. Check your connection and try again.</div>`;
@@ -915,13 +1108,18 @@ async function route() {
   window.scrollTo({ top: 0 });
 }
 
+/** Where a typed query goes: one character → its page, more Chinese
+ *  characters (simplified or traditional) → the phrase view, else search. */
+function queryHash(q) {
+  const han = D.chars(q).filter(D.isHan);
+  if (han.length === 1 && D.chars(q).length <= 2) return `#/c/${enc(han[0])}`;
+  if (han.length) return `#/p/${enc(q)}`;
+  return `#/s/${enc(q)}`;
+}
 function submitQuery(q) {
   q = q.trim();
   if (!q) return;
-  const han = D.chars(q).filter(D.isHan);
-  if (han.length === 1 && D.chars(q).length <= 2) location.hash = `#/c/${enc(han[0])}`;
-  else if (han.length) location.hash = `#/p/${enc(q)}`;
-  else location.hash = `#/s/${enc(q)}`;
+  location.hash = queryHash(q);
   $("#q").blur();
 }
 
@@ -936,6 +1134,12 @@ async function main() {
     else { location.hash = "#/"; $("#q").focus(); }
   }));
   $("#q").addEventListener("input", () => { $("#q-clear").hidden = !$("#q").value; });
+  // "/" jumps to the search box from anywhere (not while typing)
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "/" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (ev.target.closest?.("input, textarea, select, [contenteditable]")) return;
+    ev.preventDefault(); $("#q").focus(); $("#q").select();
+  });
   $("#q-clear").addEventListener("click", () => { $("#q").value = ""; $("#q-clear").hidden = true; $("#q").focus(); });
   view.innerHTML = `<div class="loading"><span class="spinner"></span>Loading…</div>`;
   try { await D.init(); }

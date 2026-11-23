@@ -2791,6 +2791,13 @@ def _mc_coda_note(tail: str) -> str:
     return "no consonant — an open vowel"
 
 
+_MC_LABIAL = set("幫滂並明")
+# Qieyun rimes the Guangyun split by rounding: rime → (Guangyun rime, its
+# entering-tone rime, whether labial-initial syllables went with it too).
+# 般 / 末 are 桓 / 末 in the Guangyun, 波 is 戈; labial 真 syllables (賓) stay 真.
+_GY_SPLIT = {"寒": ("桓", "末", True), "歌": ("戈", "", True), "真": ("諄", "術", False)}
+
+
 def mc_position_breakdown(code: str, mc_ipa: str = ""):
     """Per-element breakdown of a 音韻地位 code — a list of (glyph, explanation)
     in reading order. Each line names the actual SOUND the element adds to the
@@ -2811,9 +2818,13 @@ def mc_position_breakdown(code: str, mc_ipa: str = ""):
             hint = ini[1] if ini else ""
         piece = f"“{onset}-”, " if onset else ""
         rows.append((p["initial"], f"the initial consonant — {piece}{hint}"))
+    labial = p["initial"] in _MC_LABIAL
     if p["hu"]:
         rows.append((p["hu"], "rounding: adds a -w- lip-glide, like the w in “well”"
                      if p["hu"] == "合" else "no rounding: lips neutral/spread (plain)"))
+    elif labial and p["rime"]:
+        rows.append(("—", "no 開/合 mark: after p- b- m- this notation doesn't tell "
+                          "rounded from plain, since the lips are already closed for the consonant"))
     if p["div"]:
         label = f"division {MC_DIV[p['div']]}"
         clause = MC_CHONGNIU_CLAUSE.get(p["chongniu"])   # A/B only; C adds nothing
@@ -2824,11 +2835,19 @@ def mc_position_breakdown(code: str, mc_ipa: str = ""):
         if not tail:                     # no stored reading → coarse rime table
             fin = MC_RIMES.get(p["rime"])
             _, _, tail = _mc_segments(_mc_readable(fin) if fin else "")
+        split = _GY_SPLIT.get(p["rime"])
+        gy = ""
+        if split and (p["hu"] == "合" or (labial and split[2])):
+            name = split[1] if p["tone"] == "入" and split[1] else split[0]
+            gy = (f". The Guangyun (1008) files this under {name}"
+                  f"{' (the entering-tone partner of ' + split[0] + ')' if name != split[0] else ''}: "
+                  f"it split the rounded syllables off {p['rime']}, while this notation follows "
+                  f"the older Qieyun, which kept them together")
         if tail:
             rows.append((p["rime"], f"the rhyme — the core vowel + ending “-{tail}” "
-                                    f"({_mc_coda_note(tail)})"))
+                                    f"({_mc_coda_note(tail)}){gy}"))
         else:
-            rows.append((p["rime"], "the rhyme — the core vowel + ending"))
+            rows.append((p["rime"], f"the rhyme — the core vowel + ending{gy}"))
     if p["tone"]:
         rows.append((p["tone"], f"the tone — {MC_TONE_PLAIN.get(p['tone'], p['tone'])}"))
     return rows

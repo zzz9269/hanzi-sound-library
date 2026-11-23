@@ -43,11 +43,12 @@ export const chars = (s) => Array.from(s || "");
 function shardKey(ch) { return (ch.codePointAt(0) >> META.shardShift).toString(16); }
 
 export async function rawEntry(ch) {
+  if (!ch || !isHan(ch)) return null;        // ✓, a, 1: not in the dictionary
   const shard = await getJSON(`c/${shardKey(ch)}.json`).catch(() => ({}));
   return shard[ch] || null;
 }
 
-const MAPS = ["v", "i", "n", "w", "l", "x"];   // x = word readings
+const MAPS = ["v", "i", "n", "w", "l", "x", "xy", "xh"];   // x / xy / xh = word readings (Mandarin, Cantonese, Hokkien)
 /** Entry for a character with empty columns back-filled from its traditional
  *  form (the dataset is keyed by traditional characters). `from` = the
  *  traditional char used, when any back-fill happened. */
@@ -59,6 +60,9 @@ export async function entry(ch) {
   if (!t) return own ? { ...own, ch } : null;
   if (!own) return { ...t, ch, from: trad };
   const out = { ...own, ch };
+  // reading types describe the Japanese column they came with
+  const ja = COLIDX["Japanese"];
+  if (!own.jt && t.jt && !own.v?.[ja]) out.jt = t.jt;
   let used = false;
   for (const m of MAPS) {
     if (!t[m]) continue;

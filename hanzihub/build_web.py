@@ -611,6 +611,8 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
                 labels = {r: k for r, _, k in picked if k}
             if loc_ipa:
                 ipas = [_reading(ak.tones_to_chao(a, col), _ipa_en(col, a)) for a in loc_ipa]
+        roms = [(part, ml) for r, ml in roms
+                for part in (r.split("/") if "/" in r and " " not in r else [r]) if part]
         out = []
         for r, ml in roms:
             disp = r if col in KEEP_NATIVE_TONES else ak.wikt_rom_to_chao(r, scheme)
@@ -643,6 +645,10 @@ def build_entry(ch, bucket, zh, meta, rank, data, colidx, prov_conf, uh=None):
             a = alt.removesuffix("[ML]").strip()
             if col in ("Japanese On", "Japanese Kun", "Korean (romanized)"):
                 a = a.lower()
+            if col == "Old Chinese (Zhengzhang)":
+                # ytenx spells Zhengzhang's aspirated s (清母 *sʰ-) "sh": 雎 *sʰa,
+                # not an English "sh". He has no ʃ in Old Chinese.
+                a = a.replace("sh", "sʰ")
             disp = ak.tones_to_chao(a, col)
             en = _ipa_en(col, a) if col not in SINO else ""
             out.append(_reading(disp, en, ml, _audio_key(col, a) if col == "Vietnamese" else ""))
@@ -724,6 +730,113 @@ def word_pinyin(entries: dict, man_idx: int) -> dict[str, dict[str, str]]:
         out[w[0]][w] = " ".join(py)
     return out
 
+
+# Wiktionary word readings (kaikki.org extract, data/raw/kaikki/zh_words.json):
+# Cantonese Jyutping and Hokkien POJ for multi-character words, with whether
+# each POJ form is tagged for a Taiwanese location ("tw"), for no location
+# (""), or only for places outside Taiwan ("x").
+ZH_WORDS = paths.RAW_DIR / "kaikki" / "zh_words.json"
+# Japanese reading types from Wiktionary's kanji categories (呉音, 漢音, 訓…)
+JA_KANJI = paths.RAW_DIR / "kaikki" / "ja_kanji.json"
+_JA_TYPES = ("goon", "kan'on", "tōon", "kan'yōon", "soon", "on")
+
+
+def _kata(s: str) -> str:
+    return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in s)
+
+
+def ja_reading_types() -> dict[str, dict]:
+    """``{kanji: {"o": {katakana: type}, "k": [kun…], "j": 1}}``: which on'yomi
+    Wiktionary attests and of what type, its kun'yomi (okurigana dot
+    dropped, as in the Japanese column), and whether the kanji is jōyō."""
+    if not JA_KANJI.exists():
+        return {}
+    out = {}
+    for c, d in json.loads(JA_KANJI.read_text("utf-8")).items():
+        o = {}
+        for t in _JA_TYPES:
+            for r in d.get(t, []):
+                o.setdefault(_kata(r.replace("・", "")), t)
+        k = list(dict.fromkeys(r.replace("・", "").replace("-", "") for r in d.get("kun", [])))
+        e = {}
+        if o:
+            e["o"] = o
+        if k:
+            e["k"] = k
+        if e:
+            if d.get("joyo"):
+                e["j"] = 1
+            out[c] = e
+    return out
+
+
+def word_readings_yue_nan(entries: dict, colidx: dict) -> dict[str, dict]:
+    """Context readings for Cantonese and Taiwanese Hokkien, like
+    ``word_pinyin``: ``{"xy": {first: {word: "hong4 zoeng2"}}, "xh": {...}}``,
+    kept only where a word's reading differs from its characters' first
+    readings (行長 hong4 zoeng2, not haang4 zoeng2). Simplified spellings of
+    each word are added too, so simplified text is read the same way."""
+    if not ZH_WORDS.exists():
+        return {"xy": {}, "xh": {}}
+    words = json.loads(ZH_WORDS.read_text("utf-8"))
+    yi, hi = str(colidx["Cantonese"]), str(colidx["Hokkien"])
+
+    def reads(c, k):
+        e = entries.get(c) or entries.get(ak.s2t_text(c)) or {}
+        v = e.get("v", {})
+        return [r["t"] for r in (v.get(int(k)) or v.get(k) or [])]
+
+    def syl_yue(form):
+        sy = form.split()
+        ok = all(re.fullmatch(r"[a-z]+[1-6]", x) for x in sy)   # no 變音 (hong4-2)
+        return sy if ok else None
+
+    def syl_nan(form):
+        sy = [unicodedata.normalize("NFC", x).lower() for x in re.split(r"[-\s]+", form) if x]
+        return sy if sy and not any(re.search(r"[\d.,;()]", x) for x in sy) else None
+
+    out = {"xy": defaultdict(dict), "xh": defaultdict(dict)}
+
+    def store(key, w, sy, k):
+        cs = list(w)
+        if len(sy) != len(cs):
+            return
+        firsts = [(reads(c, k) or [None])[0] for c in cs]
+        if [unicodedata.normalize("NFC", f or "").lower() for f in firsts] == sy:
+            return
+        for spelled in {w, ak.t2s_text(w)}:
+            if len(spelled) == len(cs):
+                out[key][spelled[0]][spelled] = " ".join(sy)
+
+    for w, d in words.items():
+        if not 2 <= len(w) <= 8 or not all(_HAN_CHAR.fullmatch(c) for c in w):
+            continue
+        for f in d.get("y", []):
+            sy = syl_yue(f)
+            if sy:
+                store("xy", w, sy, yi)
+                break
+        forms = d.get("h", [])
+        tw = [f for f, t in forms if t == "tw"]
+        pool = tw or ([f for f, _ in forms] if forms and all(t == "" for _, t in forms) else [])
+        best, score = None, -1
+        for f in pool:
+            sy = syl_nan(f)
+            if not sy or len(sy) != len(w):
+                continue
+            # the form sharing most syllables with the characters' own readings
+            sc = sum(x in {unicodedata.normalize("NFC", r).lower() for r in reads(c, hi)}
+                     for x, c in zip(sy, w))
+            if sc > score:
+                best, score = sy, sc
+        if best:
+            store("xh", w, best, hi)
+    return out
+
+
+# definitions that only point at another character ("(same as 嘛)")
+_XREF = re.compile(r"\W*(same as|variant of|ancient form of|old form of|non-classical form|"
+                   r"simplified form of|abbreviated form of|interchangeable with|corrupted form)", re.I)
 
 _STOP = set("a an the of to in on and or for with by as at is be it its into from "
             "used also etc one two kind type sort name surname variant same character "
@@ -812,8 +925,9 @@ def build(out: Path = OUT, verbose=True):
         shards[key][ch] = entry
         if prov_rows.get(ch):
             pshards[key][ch] = prov_rows[ch]
+        xref = 100000 if _XREF.match(entry.get("d", "")) else 0
         for pos, w in enumerate(_en_words(entry.get("d", ""))):
-            s = rank_of(ch) + (0 if pos == 0 else 20000 + pos)
+            s = rank_of(ch) + (0 if pos == 0 else 20000 + pos) + xref
             if s < en_idx[w].get(ch, 10**9):
                 en_idx[w][ch] = s
         for ci, reads in entry.get("v", {}).items():
@@ -840,13 +954,28 @@ def build(out: Path = OUT, verbose=True):
         n_words += len(words)
     if verbose:
         print(f"[web] {n_words:,} word readings (Mandarin, in context)")
+    jt = ja_reading_types()
+    for c, t in jt.items():
+        key = f"{ord(c) >> 8:x}"
+        if c in shards[key]:
+            shards[key][c]["jt"] = t
+    if verbose and jt:
+        print(f"[web] {len(jt):,} kanji with Wiktionary reading types (jt)")
+    yn = word_readings_yue_nan(all_entries, colidx)
+    for mk, by_first in yn.items():
+        for first, words in by_first.items():
+            key = f"{ord(first) >> 8:x}"
+            shards[key].setdefault(first, {})[mk] = dict(sorted(words.items()))
+        if verbose:
+            print(f"[web] {sum(len(w) for w in by_first.values()):,} word readings ({mk}: "
+                  f"{'Cantonese' if mk == 'xy' else 'Taiwanese Hokkien'}, in context)")
     for key, d in shards.items():
         _dump(out / "c" / f"{key}.json", d)
     for key, d in pshards.items():
         _dump(out / "p" / f"{key}.json", d)
     by_letter = defaultdict(dict)
     for w, chs in en_idx.items():
-        by_letter[w[0]][w] = [c for c, _ in sorted(chs.items(), key=lambda x: x[1])[:60]]
+        by_letter[w[0]][w] = [c for c, _ in sorted(chs.items(), key=lambda x: x[1])[:200]]
     for letter, d in by_letter.items():
         _dump(out / "s" / "en" / f"{letter}.json", d)
     by_letter = defaultdict(dict)
