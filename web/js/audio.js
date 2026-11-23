@@ -130,31 +130,13 @@ export async function playUrls(urls, btn, { gap = 0, ahead = 2 } = {}) {
   setBtn(btn, "busy");
   const loaded = [];
   const load = (i) => { if (i < urls.length && !loaded[i]) loaded[i] = loadAudio(urls[i]); };
-  // Syllables made on request (ithuan) arrive after uneven delays; starting
-  // each as it lands made the rhythm ragged. Load the whole line first
-  // (up to 40 syllables, waiting at most 8 s), then play at an even pace.
-  if (gap) {
-    ahead = Math.max(ahead, 40);
-    for (let i = 0; i < Math.min(urls.length, 40); i++) load(i);
-    const ready = (a) => new Promise((res) => {
-      if (a.readyState >= 4 || a.error) return res();
-      a.addEventListener("canplaythrough", res, { once: true });
-      a.addEventListener("error", res, { once: true });
-    });
-    await Promise.race([Promise.all(loaded.filter(Boolean).map(ready)),
-      new Promise((res) => { const t = setTimeout(res, 8000); signal.stop = () => { clearTimeout(t); res(); }; })]);
-  }
   let played = 0;
   for (let i = 0; i < urls.length; i++) {
     if (signal.cancelled) break;
     for (let j = i; j <= i + ahead; j++) load(j);
-    const t0 = performance.now();
     try { await playOne(loaded[i], btn, signal); played++; } catch { /* skip a missing syllable */ }
     loaded[i] = null;
-    // an even beat: each syllable starts `gap` + 800 ms after the last one
-    // began (clips are ~0.45-0.75 s), with a short breath after a long one
-    if (gap && i < urls.length - 1 && !signal.cancelled)
-      await pause(Math.max(60, gap + 800 - (performance.now() - t0)), signal);
+    if (gap && i < urls.length - 1 && !signal.cancelled) await pause(gap, signal);
   }
   loaded.forEach((a) => { if (a) unload(a); });
   if (current === me) { setBtn(btn, ""); current = null; }
