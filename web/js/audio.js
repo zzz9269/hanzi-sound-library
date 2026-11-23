@@ -144,7 +144,9 @@ export async function playUrls(urls, btn, { gap = 0, ahead = 2 } = {}) {
 }
 
 export const mogherUrl = (file) => MOGHER + encodeURI(file);
-export const ithuanUrl = (tailo) => ITHUAN + encodeURIComponent(tailo);
+// End each syllable with 。: given a bare vowel ("i", "ì") the neural voice
+// runs on, repeating it for seconds; as a sentence it says it once.
+export const ithuanUrl = (tailo) => ITHUAN + encodeURIComponent(/[。.!?]$/.test(tailo) ? tailo : tailo + "。");
 
 /** Resolve an export audio key ("m:file.mp3" | "h:tâi-lô") to a URL. */
 export function keyUrl(key) {
