@@ -30,8 +30,8 @@ const CONS = {
   "ɦ": ["h", "a breathy, voiced h, as in “ahead”"],
   "ɕ": ["sh", "sh with the tongue pushed forward, as in “sheep”"],
   "ʑ": ["zh", "the voiced partner of ɕ: the s in “measure”, tongue forward"],
-  "ʂ": ["sh", "sh with the tongue tip curled back (retroflex)"],
-  "ʐ": ["zh", "the voiced partner of ʂ, tongue tip curled back"],
+  "ʂ": ["shr", "sh with the tongue tip curled back (retroflex)"],
+  "ʐ": ["zhr", "the voiced partner of ʂ, tongue tip curled back"],
   "ʈ": ["tr", "t with the tongue tip curled back (retroflex)"],
   "ɖ": ["dr", "d with the tongue tip curled back (retroflex)"],
   "ɳ": ["n", "n with the tongue tip curled back (retroflex)"],
@@ -48,14 +48,14 @@ const CONS = {
 const AFFRICATES = {
   ts: ["ts", "ts as in “cats”"], dz: ["dz", "dz as in “adze”"],
   "tɕ": ["ch", "ch as in “cheap”, tongue forward"], "dʑ": ["j", "j as in “jeep”, tongue forward"],
-  "tʂ": ["ch", "ch with the tongue tip curled back (retroflex)"], "dʐ": ["j", "j with the tongue tip curled back"],
+  "tʂ": ["chr", "ch with the tongue tip curled back (retroflex)"], "dʐ": ["jr", "j with the tongue tip curled back"],
 };
 const VOWELS = {
   i: ["ee", "ee as in “see”"],
   u: ["oo", "oo as in “food”"],
   e: ["e", "e as in “bed”, a little closer (like French é)"],
-  o: ["o", "a pure o, as in “go” without the glide"],
-  a: ["a", "a as in “father”"],
+  o: ["oh", "a pure o, as in “go” without the glide"],
+  a: ["ah", "a as in “father”"],
   "ə": ["uh", "uh, the vowel in “about”"],
   "ɨ": ["ih", "a central i, between “ee” and “oo” with spread lips"],
   "ɯ": ["uh", "an “oo” said with spread, unrounded lips"],
@@ -144,11 +144,15 @@ export function analyse(form, sys) {
       else if (sys === "pm") add(tk, `tone category ${n} of the reconstruction (Middle Chinese 平 上 去 入, each split by the old voicing of the initial)`);
       return;
     }
-    if (tk === "ʰ") { add("ʰ", "aspirated: a strong puff of air after the consonant (respelt h, so “th” is t + puff, not the th of “thin”)"); out += "h"; return; }
+    if (tk === "ʰ") {
+      add("ʰ", "aspirated: a strong puff of air after the consonant (respelt h, so “th” is t + puff, not the th of “thin”)");
+      if (!/(^|[^t])s$/.test(out)) out += "h";   // s + h would read as English “sh” (ts + h is fine)
+      return;
+    }
     if (tk === "ʷ") {
       if (sawVowel && atEnd(i) && /(ng|k)$/.test(out)) {   // rounded coda: heard as -wng / -wk
         add("ʷ", "the final consonant is lip-rounded, heard as a w before it (Baxter writes -wng, -wk)");
-        out = out.replace(/(ng|k)$/, "w$1");
+        if (!/(oo|oh)(ng|k)$/.test(out)) out = out.replace(/(ng|k)$/, "w$1");   // after oo / oh it's already round
       } else { add("ʷ", "lip-rounded: said with rounded lips, like adding a w"); out += "w"; }
       return;
     }
@@ -174,11 +178,22 @@ export function analyse(form, sys) {
     }
     const sym = tk.normalize("NFC");
     if (AFFRICATES[tk]) { add(sym, AFFRICATES[tk][1]); out += AFFRICATES[tk][0]; return; }
+    // i / u next to another vowel is a glide, as in Proto-Min *ui, *ai, *ia,
+    // which (unlike Baxter's IPA) doesn't mark it: 水 *ɕui → shwee, 來 *lai → ligh
+    const isV = (t) => !!t && VOWELS[t[0]] && !t.includes(NONSYL);
+    if (VOWELS[b] && !nonsyl && "iu".includes(b) && !optional) {
+      const nx = toks[i + 1], pv = toks[i - 1];
+      const glide = (isV(nx) && nx[0] !== b) ? "on" : (isV(pv) && pv[0] !== b && !"iu".includes(pv[0])) ? "off" : "";
+      if (glide) {
+        add(sym, `a short glide (${b === "i" ? "y" : "w"}) ${glide === "on" ? "before" : "after"} the main vowel`);
+        out += b === "i" ? "y" : "w";
+        return;
+      }
+    }
     if (VOWELS[b] && !nonsyl) {
       sawVowel = true;
       add(sym, VOWELS[b][1]);
       let r = VOWELS[b][0];
-      if (b === "a" && atEnd(i)) r = "ah";   // father-a; æ (cat) stays "a"
       if (r === "e" && atEnd(i)) r = "eh";
       out += r;
       return;
@@ -203,7 +218,8 @@ export function analyse(form, sys) {
     if (final && (sys === "bs" || sys === "zz") && b === "s") {
       add("-s", "a final -s suffix: the source of the later departing tone (去聲)"); out += "s"; return;
     }
-    if (final && sys === "zz" && "bdgɡ".includes(b)) {
+    const beforeS = sys === "zz" && sawVowel && toks[i + 1] === "s" && atEnd(i + 1);
+    if ((final || beforeS) && sys === "zz" && "bdgɡ".includes(b)) {
       add(`-${sym}`, `a final stop: Zhengzhang writes final stops as -b -d -ɡ (Baxter–Sagart -p -t -k); it was unreleased, like the k in “book” said without letting go`);
       out += { b: "p", d: "t", g: "k", "ɡ": "k" }[b];
       return;
@@ -217,9 +233,17 @@ export function analyse(form, sys) {
     if (!(sys === "zz" && b === "l" && /^['ʼ]$/.test(toks[i + 1] || ""))) add(sym, c[1]);   // l' explained as one
     out += c[0];
   });
-  out = out.replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-");
+  out = tidy(out.replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-"));
   const tags = [throaty && "throaty", longV && sys === "zz" && "long vowel"].filter(Boolean);
   return { respell: out + (tags.length ? ` · ${tags.join(", ")}` : ""), parts };
+}
+
+/** Glides after a vowel, said the English way: ahy → igh (high), ahw → ow
+ *  (cow), ohy → oy (boy), ehy → ay (day), aw-ending ohw → oh. */
+function tidy(s) {
+  return s.replace(/ahy(?![aeiou])/g, "igh").replace(/ahw(?![aeiou])/g, "ow")
+    .replace(/ohy(?![aeiou])/g, "oy").replace(/ehy(?![aeiou])/g, "ay").replace(/ohw(?![aeiou])/g, "oh")
+    .replace(/eey(?![aeiou])/g, "ee").replace(/oow(?![aeiou])/g, "oo");   // -ij, -uw: the glide is the vowel
 }
 
 // ---------------------------------------------------------------- Tang --
@@ -232,12 +256,12 @@ const TANG_INI = [
   ["jrh", "jr", "a voiced j with the tongue tip curled back (Middle Chinese 崇 initial)"],
   ["jh", "j", "a voiced j, as in “jeep” (Middle Chinese 船 initial)"],
   ["dzh", "dz", "dz, voiced (Middle Chinese 從 initial)"],
-  ["djh", "d", "a voiced d with the tongue tip curled back (Middle Chinese 澄 initial)"],
+  ["djh", "dr", "a voiced d with the tongue tip curled back (Middle Chinese 澄 initial)"],
   ["bh", "b", "a voiced b (Middle Chinese 並 initial); Stimson writes voiced sounds with h"],
   ["dh", "d", "a voiced d (Middle Chinese 定 initial)"],
   ["gh", "g", "a voiced g (Middle Chinese 羣 initial)"],
-  ["dj", "t", "a plain t with the tongue tip curled back (Middle Chinese 知 initial)"],
-  ["tj", "th", "an aspirated t with the tongue tip curled back (Middle Chinese 徹 initial)"],
+  ["dj", "tr", "a plain t with the tongue tip curled back (Middle Chinese 知 initial)"],
+  ["tj", "trh", "an aspirated t with the tongue tip curled back (Middle Chinese 徹 initial)"],
   ["tz", "ts", "ts as in “cats”, no puff of air (Middle Chinese 精 initial)"],
   ["ts", "tsh", "ts with a puff of air (Middle Chinese 清 initial)"],
   ["ch", "chh", "ch with a puff of air (Middle Chinese 昌 / 初 initials)"],
@@ -262,10 +286,10 @@ const TANG_INI = [
   ["l", "l", "l as in “leaf”"],
 ];
 const TANG_V = {
-  a: ["a", "a as in “father”"], "ɑ": ["ah", "a far back in the mouth, as in “spa”"],
+  a: ["ah", "a as in “father”"], "ɑ": ["ah", "a far back in the mouth, as in “spa”"],
   "æ": ["a", "a as in “cat”"], "ɛ": ["eh", "e as in “bed”"], E: ["eh", "an e-type vowel (Stimson's E)"],
   e: ["e", "e as in “bed”, a little closer (like French é)"], "ə": ["uh", "uh, the vowel in “about”"],
-  i: ["ee", "ee as in “see”"], o: ["o", "a pure o, as in “go”"], u: ["oo", "oo as in “food”"],
+  i: ["ee", "ee as in “see”"], o: ["oh", "a pure o, as in “go”"], u: ["oo", "oo as in “food”"],
 };
 const TANG_TONE = { "\u0300": ["◌̀", "a grave accent marks the departing tone (去聲)"],
                     "\u030C": ["◌̌", "a caron marks the rising tone (上聲)"] };
@@ -306,7 +330,12 @@ function analyseTang(form) {
       out += c === "u" ? "w" : "y"; continue;
     }
     const v = TANG_V[c];
-    if (v) { sawV = true; add(c, v[1]); out += v[0]; continue; }
+    if (v) {
+      sawV = true; add(c, v[1]);
+      // e / E with nothing after read "eh"; before a consonant plain e (bed)
+      out += v[0] === "e" && !/[a-z]/i.test(s.slice(i + 1).replace(/[̀-ͯ]/g, "")) ? "eh" : v[0];
+      continue;
+    }
     const rest = s.slice(i);
     if (rest.startsWith("ng")) { add("-ng", "a final ng as in “sing”"); out += "ng"; i++; continue; }
     if ("ptk".includes(c)) { add(`-${c}`, `a final ${c}, unreleased (like the k in “book” said without letting go): the entering tone (入聲)`); out += c; continue; }
@@ -314,7 +343,7 @@ function analyseTang(form) {
     out += c;
   }
   // a vowel ending in i / u after the main vowel is a glide: respell -y / -w
-  out = out.replace(/(a|ah|eh|e|uh|o)ee$/, "$1y").replace(/(a|ah|eh|e|uh|ee)oo$/, "$1w").replace(/ooo$/, "ou");
+  out = tidy(out.replace(/(a|ah|eh|e|uh|oh)ee$/, "$1y").replace(/(a|ah|eh|e|uh|ee|oh)oo$/, "$1w").replace(/ooo$/, "ou"));
   if (!tone && !/[ptk]$/.test(out)) add("(no mark)", "no tone mark: the level tone (平聲)");
   return { respell: out + (tone ? ` · ${tone === "\u0300" ? "falling" : "rising"}` : ""), parts };
 }
