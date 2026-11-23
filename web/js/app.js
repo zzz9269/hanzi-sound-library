@@ -321,14 +321,26 @@ function reconHTML(r, sys) {
     + (r.notes?.length ? `<span class="recon-note" title="The reconstruction's own annotation">Note: ${r.notes.map(esc).join(" · ")}</span>` : "") + `</span>`;
 }
 // "What the symbols mean": one block per form, every symbol explained.
-function symbolsFold(groups) {
+function symbolsFold(groups, extra = []) {
   const blocks = groups.flatMap(([sys, label, rs]) => rs.map((r) => {
     const { parts } = N.analyse(r.form, sys);
     if (!parts.length) return "";
     return `<div class="sym-block"><div class="sym-form">${label ? `<span class="pill">${esc(label)}</span>` : ""}<b>${esc(r.form)}</b></div>
       <div class="breakdown">${parts.map(([sym, t]) => `<div><b>${esc(sym)}</b>${esc(t)}</div>`).join("")}</div></div>`;
-  })).filter(Boolean);
+  })).filter(Boolean).concat(extra);
   return blocks.length ? `<details class="note sym"><summary>What the symbols mean</summary>${blocks.join("")}</details>` : "";
+}
+
+/** Baxter's ASCII spelling marks tone with a final letter: explain it. */
+function baxterToneBlock(t) {
+  const m = /^[a-z']+$/i.test(t) ? t.match(/([XH])$|([ptk])$/) : null;
+  const [sym, txt] = !m && /^[a-z']+$/i.test(t) ? ["(no mark)", "no tone letter: the level tone (平聲), ¹ in the IPA"]
+    : m?.[1] === "X" ? ["-X", "Baxter's letter for the rising tone (上聲), ² in the IPA. It isn't a sound: this tone grew out of an Old Chinese final glottal stop (*-ʔ)"]
+    : m?.[1] === "H" ? ["-H", "Baxter's letter for the departing tone (去聲), ³ in the IPA. It isn't a sound: this tone grew out of an Old Chinese final *-s, which became -h"]
+    : m?.[2] ? [`-${m[2]}`, "a final stop marks the entering tone (入聲), ⁴ in the IPA"] : [null];
+  if (!sym) return "";
+  return `<div class="sym-block"><div class="sym-form"><span class="pill">Baxter's spelling</span><b>${esc(t)}</b></div>
+    <div class="breakdown"><div><b>${esc(sym)}</b>${esc(txt)}</div></div></div>`;
 }
 
 function histRows(e) {
@@ -357,7 +369,7 @@ function histRows(e) {
     out.push(simpleRow("Middle Chinese", "中古漢語", "~600 CE · Qieyun",
       `<div class="readings">${mc.map((r) => readingHTML(r)).join("")}</div>`
       + (mci.length ? `<div class="ipa-line" style="display:flex"><span class="lbl">IPA</span>${N.mergeForms(mci).map((r) => `<span>${esc(r.form)} <span style="color:var(--jade)">≈ ${esc(N.analyse(r.form, "mc").respell)}</span></span>`).join("")}</div>`
-        + symbolsFold([["mc", "", N.mergeForms(mci)]]) : "")));
+        + symbolsFold([["mc", "", N.mergeForms(mci)]], mc.map((r) => baxterToneBlock(r.t)).filter(Boolean)) : "")));
   }
   const pos = g("Middle Chinese (position)");
   if (pos.length) {
