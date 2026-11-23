@@ -32,8 +32,8 @@ const CONS = {
   "ʑ": ["zh", "the voiced partner of ɕ: the s in “measure”, tongue forward"],
   "ʂ": ["sh", "sh with the tongue tip curled back (retroflex)"],
   "ʐ": ["zh", "the voiced partner of ʂ, tongue tip curled back"],
-  "ʈ": ["t", "t with the tongue tip curled back (retroflex)"],
-  "ɖ": ["d", "d with the tongue tip curled back (retroflex)"],
+  "ʈ": ["tr", "t with the tongue tip curled back (retroflex)"],
+  "ɖ": ["dr", "d with the tongue tip curled back (retroflex)"],
   "ɳ": ["n", "n with the tongue tip curled back (retroflex)"],
   m: ["m", "m as in “me”"],
   n: ["n", "n as in “no”"],
@@ -178,7 +178,7 @@ export function analyse(form, sys) {
       sawVowel = true;
       add(sym, VOWELS[b][1]);
       let r = VOWELS[b][0];
-      if (r === "a" && atEnd(i)) r = "ah";
+      if (b === "a" && atEnd(i)) r = "ah";   // father-a; æ (cat) stays "a"
       if (r === "e" && atEnd(i)) r = "eh";
       out += r;
       return;
