@@ -2301,6 +2301,46 @@ def teochew_phrase_mp3(pairs, spoken: bool) -> tuple[bytes | None, list[str]]:
     return (b"".join(frames) if frames else None), missing
 
 
+# Jyutping is regular enough to respell by initial + final instead of letter by
+# letter (the generic map turned gyun into "gewoon" and jan into "jahn"). Long
+# aa is "ah" (father); short a is "u" (cut); yu is "ü" (French tu); oe/eo is
+# "eu" (French peur), as in the Hong Kong spellings Heung and Cheung.
+_JP_INITIAL = {
+    "b": "b", "p": "p", "m": "m", "f": "f", "d": "d", "t": "t", "n": "n",
+    "l": "l", "g": "g", "k": "k", "ng": "ng", "h": "h", "gw": "gw", "kw": "kw",
+    "w": "w", "z": "j", "c": "ch", "s": "s", "j": "y",
+}
+_JP_FINAL = {
+    "aa": "ah", "aai": "igh", "aau": "ow", "aam": "ahm", "aan": "ahn",
+    "aang": "ahng", "aap": "ahp", "aat": "aht", "aak": "ahk",
+    "a": "uh", "ai": "uy", "au": "ow", "am": "um", "an": "un", "ang": "ung",
+    "ap": "up", "at": "ut", "ak": "uk",
+    "e": "eh", "ei": "ay", "eu": "ehw", "em": "ehm", "en": "ehn", "eng": "ehng",
+    "ep": "ehp", "et": "eht", "ek": "ehk",
+    "i": "ee", "iu": "eeu", "im": "eem", "in": "een", "ing": "ing", "ip": "eep",
+    "it": "eet", "ik": "ik",
+    "o": "aw", "oi": "oy", "ou": "oh", "om": "awm", "on": "awn", "ong": "awng",
+    "op": "awp", "ot": "awt", "ok": "awk",
+    "u": "oo", "ui": "ooy", "um": "oom", "un": "oon", "ung": "oong", "up": "oop",
+    "ut": "oot", "uk": "ook",
+    "oe": "eu", "oeng": "eung", "oek": "euk", "oet": "eut",
+    "eoi": "eui", "eon": "eun", "eot": "eut",
+    "yu": "ü", "yun": "ün", "yut": "üt",
+    "m": "m", "ng": "ng",
+}
+_JP_INI_KEYS = sorted(_JP_INITIAL, key=len, reverse=True)
+
+
+def _jyutping_english(s: str) -> str:
+    """Respell one toneless Jyutping syllable, or "" if it doesn't parse."""
+    if s in ("m", "ng"):                      # syllabic nasals 唔 m4, 五 ng5
+        return s
+    for ini in _JP_INI_KEYS + [""]:
+        if s.startswith(ini) and (fin := s[len(ini):]) in _JP_FINAL:
+            return _JP_INITIAL.get(ini, "") + _JP_FINAL[fin]
+    return ""
+
+
 def romanization_to_english(reading: str, scheme: str | None = None) -> str:
     """Rough English sounds-like for ONE romanised syllable. The tone is shown
     as a superscript **Chao pitch contour** (e.g. ``sì`` → ``see²¹``): the tone
@@ -2313,6 +2353,8 @@ def romanization_to_english(reading: str, scheme: str | None = None) -> str:
     s = (reading or "").strip()
     if not s:
         return ""
+    if scheme == "jyutping" and " " in s:
+        return " ".join(romanization_to_english(w, scheme) for w in s.split())
     tone = ""
     mlead = re.match(r"^(\d+)(.+)$", s)
     mtail = re.search(r"(\d+)$", s)
@@ -2327,6 +2369,8 @@ def romanization_to_english(reading: str, scheme: str | None = None) -> str:
     s = "".join(c for c in unicodedata.normalize("NFD", s)
                 if not unicodedata.combining(c)).lower()
     out, i, L = [], 0, len(s)
+    if scheme == "jyutping" and (jp := _jyutping_english(s)):
+        out, L = [jp], 0
     while i < L:
         if wugniu and (k := next((w for w in _WUGNIU_KEYS if s.startswith(w, i)), "")):
             out.append(_WUGNIU_ENG[k]); i += len(k); continue

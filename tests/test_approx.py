@@ -121,3 +121,12 @@ def test_mc_division_medials():
     assert ak.mc_readable_syllable("見三東平") == "kyung"   # 三等 -j-
     assert ak.mc_readable_syllable("心開四先平") == "sien"  # 四等 -i-
     assert ak.mc_readable_syllable("心合一寒平") == "swan"  # 一等 unchanged
+
+
+def test_jyutping_respelled_by_initial_and_final():
+    # long aa vs short a, yu = ü, oe/eo = eu, z/c/j = j/ch/y
+    cases = {"gyun1": "gün˥˥", "jan4": "yun˨˩", "saam1": "sahm˥˥",
+             "hoeng1": "heung˥˥", "zi6": "jee˨˨", "ceot1": "cheut˥˥",
+             "jyut6": "yüt˨˨", "ng5": "ng˩˧", "saa1 aa6": "sah˥˥ ah˨˨"}
+    for jp, en in cases.items():
+        assert ak.romanization_to_english(jp, "jyutping") == en
