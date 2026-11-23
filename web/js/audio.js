@@ -81,10 +81,14 @@ function loadAudio(url) {
   return a;
 }
 
-function playOne(a, btn, signal, timeout = 8000) {
+// Drop a file without the browser re-requesting the page as audio (src = ""
+// resolves to the page URL and fires a spurious error).
+function unload(a) { a.pause(); a.removeAttribute("src"); a.load(); }
+
+function playOne(a, btn, signal, timeout = 6000) {
   return new Promise((resolve, reject) => {
     // a missing file can hang instead of failing: give up if it never starts
-    const timer = setTimeout(() => { a.src = ""; done(false); }, timeout);
+    const timer = setTimeout(() => { unload(a); done(false); }, timeout);
     const done = (ok) => {
       clearTimeout(timer);
       a.onended = a.onerror = a.onplaying = null;
@@ -93,7 +97,7 @@ function playOne(a, btn, signal, timeout = 8000) {
     a.onended = () => done(true);
     a.onerror = () => done(false);
     a.onplaying = () => { clearTimeout(timer); setBtn(btn, "playing"); };
-    signal.stop = () => { clearTimeout(timer); a.pause(); a.src = ""; resolve(); };
+    signal.stop = () => { clearTimeout(timer); unload(a); resolve(); };
     if (a.error) { done(false); return; }
     a.play().catch(() => done(false));
   });
@@ -125,7 +129,7 @@ export async function playUrls(urls, btn, { gap = 0, ahead = 2 } = {}) {
     loaded[i] = null;
     if (gap && i < urls.length - 1 && !signal.cancelled) await pause(gap, signal);
   }
-  loaded.forEach((a) => { if (a) a.src = ""; });
+  loaded.forEach((a) => { if (a) unload(a); });
   if (current === me) { setBtn(btn, ""); current = null; }
   if (!played && !signal.cancelled) throw new Error("no recording");
 }

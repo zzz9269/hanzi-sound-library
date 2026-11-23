@@ -75,16 +75,33 @@ function urlBtn(urls, { small = false, label = "Play", gap = 0 } = {}) {
   if (!list.length) return "";
   return `<button class="play${small ? " small" : ""}" data-urls="${esc(JSON.stringify(list))}"${gap ? ` data-gap="${gap}"` : ""} aria-label="${esc(label)}" title="${esc(label)}">${ICON.play}</button>`;
 }
+function remoteHost(btn) {
+  try {
+    const u = new URL(JSON.parse(btn.dataset.urls || "[]")[0], location.href);
+    return u.origin === location.origin ? "" : u.hostname.replace(/^(www|hapsing)\./, "");
+  } catch { return ""; }
+}
+
 document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest(".play");
   if (!btn || btn.disabled) return;
   ev.preventDefault(); ev.stopPropagation();
   if (btn.classList.contains("playing") || btn.classList.contains("busy")) { A.stop(); return; }
+  // recordings fetched from another site (mogher.com, ithuan.tw) can be slow:
+  // say whose server we're waiting on, so it doesn't look like the app froze
+  const host = remoteHost(btn);
+  const slow = host && setTimeout(() => {
+    if (btn.classList.contains("busy")) toast(`Waiting for ${host}…`);
+  }, 1500);
   try {
     if (btn.dataset.tts) await A.speak(btn.dataset.text, btn.dataset.tts, { btn, rate: +(btn.dataset.rate || 0.9) });
     else if (btn.dataset.urls) await A.playUrls(JSON.parse(btn.dataset.urls), btn, { gap: +(btn.dataset.gap || 0) });
   } catch {
-    toast(btn.dataset.tts ? "No voice for this language on your device" : "No recording available for this reading");
+    toast(btn.dataset.tts ? "No voice for this language on your device"
+      : host ? `${host} didn't send the recording. Try again in a moment.`
+      : "No recording available for this reading");
+  } finally {
+    clearTimeout(slow);
   }
 });
 document.addEventListener("voices-ready", () => {
