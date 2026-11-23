@@ -259,8 +259,16 @@ function sinoRows(e) {
       const typ = (r) => jt.o[r.t.replace(/[.\-]/g, "")];
       const order = ["goon", "kan'on", "tōon", "kan'yōon", "soon", "on"];
       onRare = onK.filter((r) => !typ(r));
-      onK = onK.filter(typ).map((r) => ({ ...r, tag: JA_TYPE[typ(r)] || "" }))
-        .sort((a, b) => order.indexOf(typ(a)) - order.indexOf(typ(b)));
+      // attested on'yomi the older data lacks (行 ヒン); not word-internal ッ forms
+      const haveOn = new Set(onK.map((r) => r.t.replace(/[.\-]/g, "")));
+      onK = [...onK, ...Object.keys(jt.o).filter((t) => !haveOn.has(t) && !t.endsWith("ッ")).map((t) => ({ t }))];
+      // "goon,kan'on" → 呉音・漢音 go-on / kan-on
+      const tagOf = (t) => {
+        const ts = t.split(",").filter((x) => JA_TYPE[x]);
+        return ts.length ? ts.map((x) => JA_TYPE[x].split(" ")[0]).join("・") + " " + ts.map((x) => JA_TYPE[x].split(" ")[1]).join(" / ") : "";
+      };
+      const rank = (r) => order.indexOf(typ(r).split(",")[0]);
+      onK = onK.filter(typ).map((r) => ({ ...r, tag: tagOf(typ(r)) })).sort((a, b) => rank(a) - rank(b));
     }
     if (jt.k) {
       const have = new Set(kunK.map((r) => r.t.replace(/[.\-]/g, "")));

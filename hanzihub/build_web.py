@@ -746,7 +746,7 @@ def _kata(s: str) -> str:
 
 
 def ja_reading_types() -> dict[str, dict]:
-    """``{kanji: {"o": {katakana: type}, "k": [kun…], "j": 1}}``: which on'yomi
+    """``{kanji: {"o": {katakana: "type[,type]"}, "k": [kun…], "j": 1}}``: which on'yomi
     Wiktionary attests and of what type, its kun'yomi (okurigana dot
     dropped, as in the Japanese column), and whether the kanji is jōyō."""
     if not JA_KANJI.exists():
@@ -756,11 +756,13 @@ def ja_reading_types() -> dict[str, dict]:
         o = {}
         for t in _JA_TYPES:
             for r in d.get(t, []):
-                o.setdefault(_kata(r.replace("・", "")), t)
+                ts = o.setdefault(_kata(r.replace("・", "")), [])
+                if t not in ts:
+                    ts.append(t)
         k = list(dict.fromkeys(r.replace("・", "").replace("-", "") for r in d.get("kun", [])))
         e = {}
-        if o:
-            e["o"] = o
+        if o:   # a reading can be several types: 水 スイ is go-on and kan-on
+            e["o"] = {r: ",".join(ts) for r, ts in o.items()}
         if k:
             e["k"] = k
         if e:
